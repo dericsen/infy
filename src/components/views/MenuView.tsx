@@ -7,8 +7,10 @@ import {
   Salad,
   Croissant,
   Layers,
-  DollarSign,
-  Tag
+  Edit2,
+  Trash2,
+  Check,
+  X
 } from 'lucide-react';
 import { Station, MenuItem, RecipeBOMItem, Ingredient } from '../../types';
 import { Card } from '../common/Card';
@@ -19,15 +21,28 @@ import { Modal } from '../common/Modal';
 interface MenuViewProps {
   menuItems: MenuItem[];
   ingredients: Ingredient[];
-  onAddMenuItem?: (item: MenuItem) => void;
+  onSaveMenuItem: (item: MenuItem) => void;
+  onDeleteMenuItem: (itemId: string) => void;
 }
 
 export const MenuView: React.FC<MenuViewProps> = ({
   menuItems,
-  ingredients
+  ingredients,
+  onSaveMenuItem,
+  onDeleteMenuItem
 }) => {
   const [selectedStation, setSelectedStation] = useState<Station | 'All'>('All');
   const [activeDishForBOM, setActiveDishForBOM] = useState<MenuItem | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingDish, setEditingDish] = useState<MenuItem | null>(null);
+
+  const [formName, setFormName] = useState('');
+  const [formCategory, setFormCategory] = useState('Mains');
+  const [formStation, setFormStation] = useState<Station>('Grill');
+  const [formPrice, setFormPrice] = useState('18.00');
+  const [formBOM, setFormBOM] = useState<RecipeBOMItem[]>([]);
+  const [selectedIngToAdd, setSelectedIngToAdd] = useState(ingredients[0]?.id || '');
+  const [selectedQtyToAdd, setSelectedQtyToAdd] = useState('0.15');
 
   const stations: (Station | 'All')[] = ['All', 'Grill', 'Saute', 'Garde Manger', 'Bakery'];
 
@@ -44,6 +59,86 @@ export const MenuView: React.FC<MenuViewProps> = ({
     }
   };
 
+  const handleOpenAddModal = () => {
+    setEditingDish(null);
+    setFormName('');
+    setFormCategory('Mains');
+    setFormStation('Grill');
+    setFormPrice('16.50');
+    setFormBOM([]);
+    setIsEditModalOpen(true);
+  };
+
+  const handleOpenEditModal = (dish: MenuItem) => {
+    setEditingDish(dish);
+    setFormName(dish.name);
+    setFormCategory(dish.category);
+    setFormStation(dish.station);
+    setFormPrice(dish.sellingPrice.toString());
+    setFormBOM([...dish.ingredients]);
+    setIsEditModalOpen(true);
+  };
+
+  const handleAddIngredientToBOM = () => {
+    const raw = ingredients.find(i => i.id === selectedIngToAdd);
+    if (!raw) return;
+    const qty = parseFloat(selectedQtyToAdd) || 0.1;
+    if (qty <= 0) return;
+
+    const existingIdx = formBOM.findIndex(b => b.ingredientId === raw.id);
+    if (existingIdx >= 0) {
+      const updated = [...formBOM];
+      updated[existingIdx].quantity = qty;
+      setFormBOM(updated);
+    } else {
+      const newItem: RecipeBOMItem = {
+        id: `bom_${Date.now()}_${raw.id}`,
+        menuItemId: editingDish ? editingDish.id : 'new',
+        ingredientId: raw.id,
+        ingredientName: raw.name,
+        quantity: qty,
+        unit: raw.unit
+      };
+      setFormBOM(prev => [...prev, newItem]);
+    }
+  };
+
+  const handleRemoveIngredientFromBOM = (ingId: string) => {
+    setFormBOM(prev => prev.filter(b => b.ingredientId !== ingId));
+  };
+
+  const calculateTargetCost = (): number => {
+    return formBOM.reduce((sum, item) => {
+      const raw = ingredients.find(i => i.id === item.ingredientId);
+      const unitCost = raw ? raw.unitCost : 5.0;
+      return sum + item.quantity * unitCost;
+    }, 0);
+  };
+
+  const handleSaveDish = () => {
+    if (!formName.trim()) return;
+    const price = parseFloat(formPrice) || 10.0;
+    const computedCost = Math.round(calculateTargetCost() * 100) / 100;
+
+    const dishId = editingDish ? editingDish.id : `mnu_${Date.now()}`;
+    const normalizedBOM = formBOM.map(b => ({ ...b, menuItemId: dishId }));
+
+    const savedDish: MenuItem = {
+      id: dishId,
+      restaurantId: 'rst_rustic_table',
+      name: formName.trim(),
+      category: formCategory.trim() || 'Mains',
+      station: formStation,
+      sellingPrice: price,
+      targetCost: computedCost > 0 ? computedCost : 4.0,
+      isActive: true,
+      ingredients: normalizedBOM
+    };
+
+    onSaveMenuItem(savedDish);
+    setIsEditModalOpen(false);
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200">
@@ -52,7 +147,7 @@ export const MenuView: React.FC<MenuViewProps> = ({
             Menu Catalog & Recipe Bill of Materials
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            {menuItems.length} active signature dishes mapped to exact raw ingredient portions
+            {menuItems.length} active dishes mapped to real raw ingredient portions and food cost margins
           </p>
         </div>
 
@@ -72,12 +167,21 @@ export const MenuView: React.FC<MenuViewProps> = ({
               </button>
             ))}
           </div>
+
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={handleOpenAddModal}
+            leftIcon={<Plus className="w-3.5 h-3.5" />}
+          >
+            Create Dish
+          </Button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredDishes.map(dish => {
-          const costMarginPct = Math.round((dish.targetCost / dish.sellingPrice) * 100);
+          const costMarginPct = dish.sellingPrice > 0 ? Math.round((dish.targetCost / dish.sellingPrice) * 100) : 0;
 
           return (
             <div
@@ -131,7 +235,6 @@ export const MenuView: React.FC<MenuViewProps> = ({
               </div>
 
               <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                <span className="text-xs text-slate-400">Station: {dish.station}</span>
                 <Button
                   size="sm"
                   variant="outline"
@@ -140,6 +243,21 @@ export const MenuView: React.FC<MenuViewProps> = ({
                 >
                   Inspect BOM
                 </Button>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => handleOpenEditModal(dish)}
+                    className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-slate-100 rounded-md transition-colors"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => onDeleteMenuItem(dish.id)}
+                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-md transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
           );
@@ -189,6 +307,133 @@ export const MenuView: React.FC<MenuViewProps> = ({
                 })}
               </tbody>
             </table>
+          </div>
+        </Modal>
+      )}
+
+      {isEditModalOpen && (
+        <Modal
+          isOpen={isEditModalOpen}
+          onClose={() => setIsEditModalOpen(false)}
+          title={editingDish ? `Edit Dish: ${editingDish.name}` : 'Create New Menu Item'}
+          subtitle="Configure recipe Bill of Materials and menu pricing"
+          footer={
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setIsEditModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" size="sm" onClick={handleSaveDish} leftIcon={<Check className="w-3.5 h-3.5" />}>
+                Save Menu Item
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-4 text-xs">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Dish Name</label>
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={e => setFormName(e.target.value)}
+                  placeholder="e.g., Braised Short Rib"
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Category</label>
+                <input
+                  type="text"
+                  value={formCategory}
+                  onChange={e => setFormCategory(e.target.value)}
+                  placeholder="e.g., Mains, Pasta, Bowls"
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Kitchen Station</label>
+                <select
+                  value={formStation}
+                  onChange={e => setFormStation(e.target.value as Station)}
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900"
+                >
+                  <option value="Grill">Grill Station</option>
+                  <option value="Saute">Saute Station</option>
+                  <option value="Garde Manger">Garde Manger / Salad</option>
+                  <option value="Bakery">Bakery Station</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Selling Price ($)</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="1"
+                  value={formPrice}
+                  onChange={e => setFormPrice(e.target.value)}
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 font-bold"
+                />
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-slate-800">Recipe BOM Decomposition:</span>
+                <span className="text-slate-600 font-medium">
+                  Calculated Food Cost: <strong className="text-slate-900">${calculateTargetCost().toFixed(2)}</strong>
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedIngToAdd}
+                  onChange={e => setSelectedIngToAdd(e.target.value)}
+                  className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-slate-800"
+                >
+                  {ingredients.map(ing => (
+                    <option key={ing.id} value={ing.id}>
+                      {ing.name} (${ing.unitCost.toFixed(2)} / {ing.unit})
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={selectedQtyToAdd}
+                  onChange={e => setSelectedQtyToAdd(e.target.value)}
+                  className="w-20 px-2 py-1.5 bg-white border border-slate-300 rounded text-slate-800 font-bold text-center"
+                />
+                <Button size="sm" variant="outline" onClick={handleAddIngredientToBOM}>
+                  Add to Recipe
+                </Button>
+              </div>
+
+              {formBOM.length > 0 ? (
+                <div className="space-y-1.5 pt-1">
+                  {formBOM.map(item => (
+                    <div key={item.ingredientId} className="flex items-center justify-between bg-white px-3 py-1.5 rounded border border-slate-200">
+                      <span className="font-medium text-slate-800">{item.ingredientName}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="font-bold text-slate-700">{item.quantity} {item.unit}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveIngredientFromBOM(item.ingredientId)}
+                          className="text-slate-400 hover:text-rose-600"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-slate-400 italic text-[11px]">No raw ingredients linked yet. Add at least one ingredient.</p>
+              )}
+            </div>
           </div>
         </Modal>
       )}

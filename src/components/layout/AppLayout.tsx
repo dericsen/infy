@@ -4,6 +4,8 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { DemoBanner } from '../common/DemoBanner';
 
+import { UserSession } from '../../services/authService';
+
 interface AppLayoutProps {
   currentRoute: AppRoute;
   onRouteChange: (route: AppRoute) => void;
@@ -14,6 +16,9 @@ interface AppLayoutProps {
   selectedShift: 'All Day' | 'Lunch' | 'Dinner';
   onShiftChange: (shift: 'All Day' | 'Lunch' | 'Dinner') => void;
   isOnline: boolean;
+  currentUser: UserSession | null;
+  onLogin: () => void;
+  onLogout: () => void;
   onResetBenchmark: () => void;
   onQuickWasteLog: () => void;
   children: React.ReactNode;
@@ -29,6 +34,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   selectedShift,
   onShiftChange,
   isOnline,
+  currentUser,
+  onLogin,
+  onLogout,
   onResetBenchmark,
   onQuickWasteLog,
   children
@@ -58,6 +66,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             selectedShift={selectedShift}
             onShiftChange={onShiftChange}
             isOnline={isOnline}
+            currentUser={currentUser}
+            onLogin={onLogin}
+            onLogout={onLogout}
             onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
             onNavigate={onRouteChange}
             onQuickWasteLog={onQuickWasteLog}

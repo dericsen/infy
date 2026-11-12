@@ -1,0 +1,156 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isRestaurantMember(restaurantId) {
+      return isSignedIn() && (
+        request.auth.token.firebase.sign_in_provider != null
+      );
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'email', 'displayName', 'restaurantId', 'role']) &&
+             data.keys().hasOnly(['id', 'email', 'displayName', 'restaurantId', 'role', 'createdAt', 'updatedAt']) &&
+             data.id is string && data.id == request.auth.uid &&
+             data.email is string && data.email.size() <= 128 &&
+             data.displayName is string && data.displayName.size() <= 100 &&
+             data.restaurantId is string && data.restaurantId.size() <= 64 &&
+             data.role in ['owner', 'general_manager', 'head_chef', 'line_cook'];
+    }
+
+    function isValidRestaurant(data) {
+      return data.keys().hasAll(['id', 'name', 'concept', 'currency', 'ownerId']) &&
+             data.keys().hasOnly(['id', 'name', 'concept', 'currency', 'stations', 'ownerId', 'isDemonstrationData', 'createdAt']) &&
+             data.id is string && isValidId(data.id) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.concept is string && data.concept.size() <= 100 &&
+             data.currency is string && data.currency.size() <= 8 &&
+             data.ownerId is string && data.ownerId == request.auth.uid;
+    }
+
+    function isValidMenuItem(data, rstId) {
+      return data.keys().hasAll(['id', 'restaurantId', 'name', 'station', 'sellingPrice', 'targetCost']) &&
+             data.keys().hasOnly(['id', 'restaurantId', 'name', 'category', 'station', 'sellingPrice', 'targetCost', 'isActive', 'isDemonstrationData', 'createdAt']) &&
+             data.id is string && isValidId(data.id) &&
+             data.restaurantId is string && data.restaurantId == rstId &&
+             data.name is string && data.name.size() <= 100 &&
+             data.station in ['Grill', 'Saute', 'Garde Manger', 'Bakery'] &&
+             data.sellingPrice is number && data.sellingPrice > 0 &&
+             data.targetCost is number && data.targetCost > 0;
+    }
+
+    function isValidIngredient(data, rstId) {
+      return data.keys().hasAll(['id', 'restaurantId', 'name', 'unit', 'unitCost', 'currentStock', 'safetyStock']) &&
+             data.keys().hasOnly(['id', 'restaurantId', 'name', 'category', 'unit', 'unitCost', 'currentStock', 'safetyStock', 'shelfLifeDays', 'isDemonstrationData', 'updatedAt']) &&
+             data.id is string && isValidId(data.id) &&
+             data.restaurantId is string && data.restaurantId == rstId &&
+             data.name is string && data.name.size() <= 100 &&
+             data.unit in ['kg', 'g', 'L', 'ml', 'pcs'] &&
+             data.unitCost is number && data.unitCost >= 0 &&
+             data.currentStock is number && data.currentStock >= 0 &&
+             data.safetyStock is number && data.safetyStock >= 0;
+    }
+
+    function isValidDailySales(data, rstId) {
+      return data.keys().hasAll(['id', 'restaurantId', 'date', 'menuItemId', 'quantitySold', 'revenue']) &&
+             data.keys().hasOnly(['id', 'restaurantId', 'date', 'dayOfWeek', 'station', 'menuItemId', 'dishName', 'quantitySold', 'revenue', 'mealPeriod', 'weatherCondition', 'temperatureC', 'eventTag', 'isDemonstrationData']) &&
+             data.id is string && isValidId(data.id) &&
+             data.restaurantId is string && data.restaurantId == rstId &&
+             data.date is string && data.date.size() <= 10 &&
+             data.quantitySold is number && data.quantitySold >= 0 &&
+             data.revenue is number && data.revenue >= 0;
+    }
+
+    function isValidPrepSheet(data, rstId) {
+      return data.keys().hasAll(['id', 'restaurantId', 'businessDate', 'station', 'taskId', 'recommendedPrep', 'isCompleted']) &&
+             data.keys().hasOnly(['id', 'restaurantId', 'businessDate', 'station', 'taskId', 'dishName', 'recommendedPrep', 'managerOverride', 'isCompleted', 'completedAt', 'updatedAt']) &&
+             data.id is string && isValidId(data.id) &&
+             data.restaurantId is string && data.restaurantId == rstId &&
+             data.businessDate is string && data.businessDate.size() <= 10 &&
+             data.recommendedPrep is number && data.recommendedPrep >= 0 &&
+             data.isCompleted is bool;
+    }
+
+    function isValidWasteRecord(data, rstId) {
+      return data.keys().hasAll(['id', 'restaurantId', 'date', 'itemId', 'name', 'quantity', 'unitCost', 'totalLossCost', 'reason']) &&
+             data.keys().hasOnly(['id', 'restaurantId', 'date', 'itemId', 'itemType', 'name', 'quantity', 'unit', 'unitCost', 'totalLossCost', 'reason', 'loggedBy', 'station', 'createdAt']) &&
+             data.id is string && isValidId(data.id) &&
+             data.restaurantId is string && data.restaurantId == rstId &&
+             data.date is string && data.date.size() <= 10 &&
+             data.quantity is number && data.quantity > 0 &&
+             data.totalLossCost is number && data.totalLossCost >= 0 &&
+             data.reason in ['Overproduction', 'Expired', 'Prep Mistake', 'Quality Defect'];
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId);
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
+      allow update: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) &&
+                    incoming().id == existing().id &&
+                    incoming().email == existing().email;
+      allow delete: if false;
+    }
+
+    match /restaurants/{restaurantId} {
+      allow get: if isRestaurantMember(restaurantId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidRestaurant(incoming()) && incoming().ownerId == request.auth.uid;
+      allow update: if isSignedIn() && isValidRestaurant(incoming()) && existing().ownerId == request.auth.uid;
+      allow delete: if false;
+
+      match /menu_items/{menuItemId} {
+        allow read: if isRestaurantMember(restaurantId);
+        allow create: if isRestaurantMember(restaurantId) && isValidMenuItem(incoming(), restaurantId);
+        allow update: if isRestaurantMember(restaurantId) && isValidMenuItem(incoming(), restaurantId);
+        allow delete: if isRestaurantMember(restaurantId);
+      }
+
+      match /ingredients/{ingredientId} {
+        allow read: if isRestaurantMember(restaurantId);
+        allow create: if isRestaurantMember(restaurantId) && isValidIngredient(incoming(), restaurantId);
+        allow update: if isRestaurantMember(restaurantId) && isValidIngredient(incoming(), restaurantId);
+        allow delete: if isRestaurantMember(restaurantId);
+      }
+
+      match /daily_sales/{salesId} {
+        allow read: if isRestaurantMember(restaurantId);
+        allow create: if isRestaurantMember(restaurantId) && isValidDailySales(incoming(), restaurantId);
+        allow update: if isRestaurantMember(restaurantId) && isValidDailySales(incoming(), restaurantId);
+        allow delete: if isRestaurantMember(restaurantId);
+      }
+
+      match /prep_sheets/{sheetId} {
+        allow read: if isRestaurantMember(restaurantId);
+        allow create: if isRestaurantMember(restaurantId) && isValidPrepSheet(incoming(), restaurantId);
+        allow update: if isRestaurantMember(restaurantId) && isValidPrepSheet(incoming(), restaurantId);
+        allow delete: if isRestaurantMember(restaurantId);
+      }
+
+      match /waste_records/{recordId} {
+        allow read: if isRestaurantMember(restaurantId);
+        allow create: if isRestaurantMember(restaurantId) && isValidWasteRecord(incoming(), restaurantId);
+        allow update: if isRestaurantMember(restaurantId) && isValidWasteRecord(incoming(), restaurantId);
+        allow delete: if isRestaurantMember(restaurantId);
+      }
+    }
+  }
+}

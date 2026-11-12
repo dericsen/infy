@@ -11,6 +11,8 @@ import {
 import { AppRoute, Station } from '../../types';
 import { Button } from '../common/Button';
 
+import { UserSession } from '../../services/authService';
+
 interface HeaderProps {
   currentRoute: AppRoute;
   selectedStationFilter: Station | 'All';
@@ -19,6 +21,9 @@ interface HeaderProps {
   selectedShift: 'All Day' | 'Lunch' | 'Dinner';
   onShiftChange: (shift: 'All Day' | 'Lunch' | 'Dinner') => void;
   isOnline: boolean;
+  currentUser: UserSession | null;
+  onLogin: () => void;
+  onLogout: () => void;
   onOpenMobileSidebar: () => void;
   onNavigate: (route: AppRoute) => void;
   onQuickWasteLog: () => void;
@@ -32,6 +37,9 @@ export const Header: React.FC<HeaderProps> = ({
   selectedShift,
   onShiftChange,
   isOnline,
+  currentUser,
+  onLogin,
+  onLogout,
   onOpenMobileSidebar,
   onNavigate,
   onQuickWasteLog
@@ -110,8 +118,30 @@ export const Header: React.FC<HeaderProps> = ({
               : 'bg-amber-50 text-amber-700 border-amber-200'
           }`}>
             <Wifi className="w-3 h-3" />
-            <span>{isOnline ? 'Online / AI Ready' : 'Deterministic Offline Mode'}</span>
+            <span>{isOnline ? 'Online / Firestore' : 'Offline Cache'}</span>
           </div>
+
+          {currentUser ? (
+            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg text-xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="font-semibold text-slate-800 max-w-[120px] truncate">
+                {currentUser.displayName || currentUser.email}
+              </span>
+              <button
+                onClick={onLogout}
+                className="text-slate-400 hover:text-rose-600 font-medium pl-1 text-[11px]"
+              >
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={onLogin}
+              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors"
+            >
+              Sign In
+            </button>
+          )}
 
           <div className="flex items-center gap-2">
             <Button

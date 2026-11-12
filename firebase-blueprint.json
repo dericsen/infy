@@ -1,0 +1,165 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Restaurant staff profile with role and associated restaurant",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "restaurantId": { "type": "string", "maxLength": 64 },
+        "role": { "type": "string", "enum": ["owner", "general_manager", "head_chef", "line_cook"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "displayName", "restaurantId", "role"]
+    },
+    "Restaurant": {
+      "title": "Restaurant",
+      "description": "Restaurant business configuration and operational stations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 100 },
+        "concept": { "type": "string", "maxLength": 100 },
+        "currency": { "type": "string", "maxLength": 8 },
+        "stations": { "type": "array" },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "isDemonstrationData": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "concept", "currency", "ownerId"]
+    },
+    "MenuItem": {
+      "title": "MenuItem",
+      "description": "Menu dish with station and recipe decomposition",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "restaurantId": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 100 },
+        "category": { "type": "string", "maxLength": 64 },
+        "station": { "type": "string", "enum": ["Grill", "Saute", "Garde Manger", "Bakery"] },
+        "sellingPrice": { "type": "number" },
+        "targetCost": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "isDemonstrationData": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "restaurantId", "name", "station", "sellingPrice", "targetCost"]
+    },
+    "Ingredient": {
+      "title": "Ingredient",
+      "description": "Raw ingredient stock item with cost and safety par levels",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "restaurantId": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 100 },
+        "category": { "type": "string", "maxLength": 64 },
+        "unit": { "type": "string", "enum": ["kg", "g", "L", "ml", "pcs"] },
+        "unitCost": { "type": "number" },
+        "currentStock": { "type": "number" },
+        "safetyStock": { "type": "number" },
+        "shelfLifeDays": { "type": "number" },
+        "isDemonstrationData": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "restaurantId", "name", "unit", "unitCost", "currentStock", "safetyStock"]
+    },
+    "DailySalesSummary": {
+      "title": "DailySalesSummary",
+      "description": "Historical daily sales ledger records by dish and date",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "restaurantId": { "type": "string", "maxLength": 64 },
+        "date": { "type": "string", "maxLength": 10 },
+        "dayOfWeek": { "type": "number" },
+        "station": { "type": "string", "maxLength": 32 },
+        "menuItemId": { "type": "string", "maxLength": 64 },
+        "dishName": { "type": "string", "maxLength": 100 },
+        "quantitySold": { "type": "number" },
+        "revenue": { "type": "number" },
+        "mealPeriod": { "type": "string", "maxLength": 32 },
+        "weatherCondition": { "type": "string", "maxLength": 32 },
+        "temperatureC": { "type": "number" },
+        "eventTag": { "type": "string", "maxLength": 100 },
+        "isDemonstrationData": { "type": "boolean" }
+      },
+      "required": ["id", "restaurantId", "date", "menuItemId", "quantitySold", "revenue"]
+    },
+    "PreparationRecommendation": {
+      "title": "PreparationRecommendation",
+      "description": "Daily station prep sheet and checklist tasks",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "restaurantId": { "type": "string", "maxLength": 64 },
+        "businessDate": { "type": "string", "maxLength": 10 },
+        "station": { "type": "string", "maxLength": 32 },
+        "taskId": { "type": "string", "maxLength": 64 },
+        "dishName": { "type": "string", "maxLength": 100 },
+        "recommendedPrep": { "type": "number" },
+        "managerOverride": { "type": "number" },
+        "isCompleted": { "type": "boolean" },
+        "completedAt": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "restaurantId", "businessDate", "station", "taskId", "recommendedPrep", "isCompleted"]
+    },
+    "FoodWasteRecord": {
+      "title": "FoodWasteRecord",
+      "description": "Shift discard ledger with reason code and financial loss",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "restaurantId": { "type": "string", "maxLength": 64 },
+        "date": { "type": "string", "maxLength": 10 },
+        "itemId": { "type": "string", "maxLength": 64 },
+        "itemType": { "type": "string", "enum": ["menu_item", "ingredient"] },
+        "name": { "type": "string", "maxLength": 100 },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string", "maxLength": 16 },
+        "unitCost": { "type": "number" },
+        "totalLossCost": { "type": "number" },
+        "reason": { "type": "string", "enum": ["Overproduction", "Expired", "Prep Mistake", "Quality Defect"] },
+        "loggedBy": { "type": "string", "maxLength": 64 },
+        "station": { "type": "string", "maxLength": 32 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "restaurantId", "date", "itemId", "name", "quantity", "unitCost", "totalLossCost", "reason"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles with restaurant access mapping"
+    },
+    "/restaurants/{restaurantId}": {
+      "schema": "Restaurant",
+      "description": "Restaurant profile and stations configuration"
+    },
+    "/restaurants/{restaurantId}/menu_items/{menuItemId}": {
+      "schema": "MenuItem",
+      "description": "Restaurant menu catalog with recipe BOM"
+    },
+    "/restaurants/{restaurantId}/ingredients/{ingredientId}": {
+      "schema": "Ingredient",
+      "description": "Raw ingredient stock pars and unit costs"
+    },
+    "/restaurants/{restaurantId}/daily_sales/{salesId}": {
+      "schema": "DailySalesSummary",
+      "description": "Daily item sales history and weather context"
+    },
+    "/restaurants/{restaurantId}/prep_sheets/{sheetId}": {
+      "schema": "PreparationRecommendation",
+      "description": "Daily kitchen station prep checklist states"
+    },
+    "/restaurants/{restaurantId}/waste_records/{recordId}": {
+      "schema": "FoodWasteRecord",
+      "description": "Food waste discard logs and cost tracking"
+    }
+  }
+}
