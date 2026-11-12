@@ -382,6 +382,7 @@ export default function App() {
           <PredictionView
             businessDate={businessDate}
             menuItems={menuItems}
+            salesRecords={salesRecords}
             onApplyForecastToPrep={handleApplyForecastToPrep}
           />
         );
