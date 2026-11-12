@@ -1,0 +1,6 @@
+{
+  "name": "WasteLess",
+  "description": "AI-powered restaurant food waste and overproduction prediction platform",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
