@@ -1,208 +1,155 @@
-import { z } from 'zod';
-import {
-  ContextualDishAdjustment,
-  ContextualForecastResponse,
-  ForecastConfig,
-  DEFAULT_FORECAST_CONFIG,
-  MenuItem
-} from '../types';
-import {
-  calculateHeuristicContextModifier,
-  clampAdjustmentMultiplier,
-  getDayOfWeekFromIso
-} from '../engine/forecastingEngine';
+import { ContextualAnalysisResult, MenuItem } from '../types';
+import { ContextualCacheRepository } from '../db/repositories';
+import { DishForecastResult } from '../engine/forecastingEngine';
 
-const ServerResponseSchema = z.object({
-  modelVersion: z.string(),
-  generalAssessment: z.string(),
-  adjustments: z.array(
-    z.object({
-      dishId: z.string(),
-      suggestedMultiplier: z.number().finite(),
-      clampedMultiplier: z.number().finite(),
-      rationale: z.string(),
-      riskOfWaste: z.enum(['Low', 'Medium', 'High'])
-    })
-  ),
-  isOfflineFallback: z.boolean()
-});
+const CACHE_TTL_MS = 30 * 60 * 1000;
+const CLIENT_TIMEOUT_MS = 14000;
 
-const WEEKDAY_NAMES = [
-  'Sunday',
-  'Monday',
-  'Tuesday',
-  'Wednesday',
-  'Thursday',
-  'Friday',
-  'Saturday'
-];
+export function buildContextCacheKey(params: {
+  targetDate: string;
+  condition: string;
+  temperatureC: number;
+  precipChance: number;
+  eventContext: string;
+  adjustmentLimitPct: number;
+  dishBases: { id: string; baseSales: number }[];
+}): string {
+  const dishSig = params.dishBases
+    .map(d => `${d.id}:${d.baseSales}`)
+    .sort()
+    .join('|');
+  return [
+    params.targetDate,
+    params.condition,
+    params.temperatureC,
+    params.precipChance,
+    params.eventContext,
+    params.adjustmentLimitPct,
+    dishSig
+  ].join('::');
+}
 
-export function buildDeterministicFallbackResponse(
-  dishes: MenuItem[],
-  targetDate: string,
-  weather: { condition: string; temperatureC: number; precipChance: number },
-  eventContext: string,
-  config: ForecastConfig,
-  reason: string
-): ContextualForecastResponse {
-  const dayOfWeek = getDayOfWeekFromIso(targetDate);
-
-  const adjustments: ContextualDishAdjustment[] = dishes.map(dish => {
-    const heuristic = calculateHeuristicContextModifier(dish, dayOfWeek, weather, eventContext);
-    const clamped = clampAdjustmentMultiplier(
-      heuristic.modifierPct,
-      config.maxDecreasePct,
-      config.maxIncreasePct
-    );
-
+export async function requestContextualForecast(params: {
+  targetDate: string;
+  weatherForecast: {
+    condition: string;
+    temperatureC: number;
+    precipitationProbability: number;
+  };
+  eventContext: string;
+  adjustmentLimitPct: number;
+  menuItems: MenuItem[];
+  statisticalForecasts: DishForecastResult[];
+  simulateOffline?: boolean;
+}): Promise<ContextualAnalysisResult> {
+  const activeDishes = params.menuItems.filter(m => m.isActive);
+  const dishInputs = activeDishes.map(dish => {
+    const stat = params.statisticalForecasts.find(f => f.dishId === dish.id);
     return {
-      dishId: dish.id,
-      suggestedMultiplier: Math.round(heuristic.modifierPct * 1000) / 1000,
-      clampedMultiplier: Math.round(clamped * 1000) / 1000,
-      rationale:
-        heuristic.rationaleParts.length > 0
-          ? `${heuristic.rationaleParts.join('; ')} (local statistical heuristic).`
-          : 'Steady 4-week weekday baseline (local statistical heuristic).',
-      riskOfWaste: clamped < -0.10 || dish.station === 'Bakery' ? 'High' : clamped > 0.15 ? 'Medium' : 'Low'
+      id: dish.id,
+      name: dish.name,
+      station: dish.station,
+      category: dish.category,
+      baseSales: stat ? stat.baseStatisticalForecast : 16
     };
   });
 
-  return {
-    modelVersion: 'local-heuristic-fallback',
-    generalAssessment: `Using deterministic local heuristics for ${WEEKDAY_NAMES[dayOfWeek]} (${weather.condition}, ${weather.temperatureC}C). ${reason}`,
-    adjustments,
-    isOfflineFallback: true,
-    fallbackReason: reason
-  };
-}
+  const cacheKey = buildContextCacheKey({
+    targetDate: params.targetDate,
+    condition: params.weatherForecast.condition,
+    temperatureC: params.weatherForecast.temperatureC,
+    precipChance: params.weatherForecast.precipitationProbability,
+    eventContext: params.eventContext,
+    adjustmentLimitPct: params.adjustmentLimitPct,
+    dishBases: dishInputs.map(d => ({ id: d.id, baseSales: d.baseSales }))
+  });
 
-export async function requestContextualForecast(
-  params: {
-    targetDate: string;
-    weather: { condition: string; temperatureC: number; precipChance: number };
-    eventContext: string;
-    dishes: Array<{
-      item: MenuItem;
-      baseSales: number;
-      recentAverage: number;
-    }>;
-    config?: ForecastConfig;
-  },
-  fetchFn: typeof fetch = fetch,
-  timeoutMs: number = 14000
-): Promise<ContextualForecastResponse> {
-  const config = params.config || DEFAULT_FORECAST_CONFIG;
-  const menuItems = params.dishes.map(d => d.item);
-  const dayOfWeekName = WEEKDAY_NAMES[getDayOfWeekFromIso(params.targetDate)] || 'Day';
-
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    return buildDeterministicFallbackResponse(
-      menuItems,
-      params.targetDate,
-      params.weather,
-      params.eventContext,
-      config,
-      'Device is offline.'
-    );
+  if (params.simulateOffline || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return {
+      cacheKey,
+      targetDate: params.targetDate,
+      modelVersion: 'statistical-fallback',
+      adjustmentLimitPct: params.adjustmentLimitPct,
+      generalAssessment: 'Gemini contextual intelligence unavailable (offline mode active). Using deterministic statistical baseline and local weather heuristics.',
+      adjustments: [],
+      isFallback: true,
+      fallbackReason: params.simulateOffline ? 'Simulated offline / Gemini unavailable state.' : 'Browser is offline.',
+      generatedAt: new Date().toISOString()
+    };
   }
 
+  const cached = await ContextualCacheRepository.get(cacheKey);
+  if (cached && !cached.isFallback) {
+    const ageMs = Date.now() - new Date(cached.generatedAt).getTime();
+    if (ageMs >= 0 && ageMs < CACHE_TTL_MS) {
+      return cached;
+    }
+  }
+
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const dayOfWeek = dayNames[new Date(params.targetDate).getDay()] || 'Friday';
+
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutId = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
 
   try {
-    const response = await fetchFn('/api/forecast/contextualize', {
+    const response = await fetch('/api/forecast/contextualize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
         targetDate: params.targetDate,
-        dayOfWeek: dayOfWeekName,
-        weatherForecast: {
-          condition: params.weather.condition,
-          temperatureC: params.weather.temperatureC,
-          precipitationProbability: params.weather.precipChance
-        },
+        dayOfWeek,
+        weatherForecast: params.weatherForecast,
         eventContext: params.eventContext,
-        bounds: {
-          maxDecreasePct: config.maxDecreasePct,
-          maxIncreasePct: config.maxIncreasePct
-        },
-        dishes: params.dishes.map(d => ({
-          id: d.item.id,
-          name: d.item.name,
-          station: d.item.station,
-          category: d.item.category,
-          baseSales: d.baseSales,
-          recentAverage: d.recentAverage
-        }))
+        adjustmentLimitPct: params.adjustmentLimitPct,
+        dishes: dishInputs
       })
     });
 
-    if (!response.ok) {
-      let errReason = `Server returned HTTP ${response.status}.`;
-      try {
-        const errBody = (await response.json()) as { error?: string };
-        if (errBody?.error) errReason = errBody.error;
-      } catch {
-        errReason = `Server returned HTTP ${response.status}.`;
-      }
-      return buildDeterministicFallbackResponse(
-        menuItems,
-        params.targetDate,
-        params.weather,
-        params.eventContext,
-        config,
-        errReason
-      );
+    clearTimeout(timeoutId);
+
+    const json = await response.json();
+    if (!response.ok || json.fallbackRequired) {
+      return {
+        cacheKey,
+        targetDate: params.targetDate,
+        modelVersion: 'statistical-fallback',
+        adjustmentLimitPct: params.adjustmentLimitPct,
+        generalAssessment: 'Gemini service unavailable. Continuing uninterrupted with deterministic 4-week statistical forecast.',
+        adjustments: [],
+        isFallback: true,
+        fallbackReason: json.error || `HTTP ${response.status}`,
+        generatedAt: new Date().toISOString()
+      };
     }
 
-    const rawJson: unknown = await response.json();
-    const parsed = ServerResponseSchema.safeParse(rawJson);
-    if (!parsed.success) {
-      return buildDeterministicFallbackResponse(
-        menuItems,
-        params.targetDate,
-        params.weather,
-        params.eventContext,
-        config,
-        'Server returned unexpected forecast payload structure.'
-      );
-    }
-
-    const safeAdjustments: ContextualDishAdjustment[] = parsed.data.adjustments.map(adj => ({
-      dishId: adj.dishId,
-      suggestedMultiplier: adj.suggestedMultiplier,
-      clampedMultiplier: clampAdjustmentMultiplier(
-        adj.suggestedMultiplier,
-        config.maxDecreasePct,
-        config.maxIncreasePct
-      ),
-      rationale: adj.rationale,
-      riskOfWaste: adj.riskOfWaste
-    }));
-
-    return {
-      modelVersion: parsed.data.modelVersion,
-      generalAssessment: parsed.data.generalAssessment,
-      adjustments: safeAdjustments,
-      isOfflineFallback: false
+    const result: ContextualAnalysisResult = {
+      cacheKey,
+      targetDate: params.targetDate,
+      modelVersion: json.modelVersion || 'gemini-4-hydrogen',
+      adjustmentLimitPct: json.adjustmentLimitPct || params.adjustmentLimitPct,
+      generalAssessment: json.generalAssessment || 'Contextual demand briefing ready.',
+      adjustments: Array.isArray(json.adjustments) ? json.adjustments : [],
+      isFallback: false,
+      generatedAt: json.generatedAt || new Date().toISOString()
     };
-  } catch (err) {
-    const reason = err instanceof Error && err.name === 'AbortError'
-      ? 'Contextual forecast request timed out.'
-      : err instanceof Error
-      ? err.message
-      : 'Network error contacting forecast API.';
 
-    return buildDeterministicFallbackResponse(
-      menuItems,
-      params.targetDate,
-      params.weather,
-      params.eventContext,
-      config,
-      reason
-    );
-  } finally {
-    clearTimeout(timer);
+    await ContextualCacheRepository.save(result);
+    return result;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const reason = err instanceof Error ? err.message : 'Network failure reaching Gemini backend.';
+    return {
+      cacheKey,
+      targetDate: params.targetDate,
+      modelVersion: 'statistical-fallback',
+      adjustmentLimitPct: params.adjustmentLimitPct,
+      generalAssessment: 'Gemini backend unreachable. Continuing with deterministic statistical forecast and safety bounds.',
+      adjustments: [],
+      isFallback: true,
+      fallbackReason: reason,
+      generatedAt: new Date().toISOString()
+    };
   }
 }

@@ -2,17 +2,15 @@ import {
   SaleRecord,
   MenuItem,
   Station,
-  ForecastConfig,
-  DEFAULT_FORECAST_CONFIG,
-  ContextualDishAdjustment
+  ClosedDayRecord,
+  AppSettings,
+  GeminiDishAdjustment
 } from '../types';
 
 export interface DataSufficiencyStatus {
   isSufficient: boolean;
   totalDays: number;
   sameWeekdayCount: number;
-  excludedInvalidCount: number;
-  excludedClosedCount: number;
   status: 'optimal' | 'moderate' | 'insufficient';
   message: string;
 }
@@ -26,10 +24,8 @@ export interface ModelAccuracyEvaluation {
   wmaMae: number;
   wmaMape: number;
   wmaRmse: number;
-  wmaBias: number;
   accuracyImprovementPct: number;
   forecastBias: 'Over-forecasting' | 'Under-forecasting' | 'Balanced';
-  evaluationNote: string;
 }
 
 export interface DishForecastResult {
@@ -52,121 +48,42 @@ export interface DishForecastResult {
   safetyBufferPct: number;
   recommendedPrep: number;
   historicalVolatilityStdDev: number;
-  confidenceScore: number;
   rationale: string;
+  adjustmentSource: 'gemini' | 'statistical_heuristic' | 'closed';
   riskOfWaste: 'Low' | 'Medium' | 'High';
-  predictionSource: 'ai-assisted' | 'deterministic-fallback' | 'closed-day';
 }
 
-export function isValidIsoDate(dateStr: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
-  const parsed = new Date(`${dateStr}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime())) return false;
-  return parsed.toISOString().slice(0, 10) === dateStr;
-}
-
-export function getDayOfWeekFromIso(dateStr: string): number {
-  if (!isValidIsoDate(dateStr)) return 0;
-  return new Date(`${dateStr}T00:00:00Z`).getUTCDay();
-}
-
-export function addDaysIso(dateStr: string, deltaDays: number): string {
-  const base = new Date(`${dateStr}T00:00:00Z`);
-  base.setUTCDate(base.getUTCDate() + deltaDays);
-  return base.toISOString().slice(0, 10);
-}
-
-export function isClosedServiceDate(
-  dateStr: string,
-  config: Pick<ForecastConfig, 'closedWeekdays' | 'closedDates'>
-): boolean {
-  if (!isValidIsoDate(dateStr)) return false;
-  if (config.closedDates.includes(dateStr)) return true;
-  const dow = getDayOfWeekFromIso(dateStr);
-  return config.closedWeekdays.includes(dow);
-}
-
-export function sanitizeHistoricalRecords(
-  salesHistory: SaleRecord[],
-  dishId: string,
-  targetDate: string,
-  config: Pick<ForecastConfig, 'closedWeekdays' | 'closedDates'>
-): {
-  validRecords: SaleRecord[];
-  excludedInvalidCount: number;
-  excludedClosedCount: number;
-} {
-  let excludedInvalidCount = 0;
-  let excludedClosedCount = 0;
-  const byDate = new Map<string, SaleRecord>();
-
-  for (const r of salesHistory) {
-    if (!r || r.menuItemId !== dishId) continue;
-    if (!isValidIsoDate(r.date)) {
-      excludedInvalidCount += 1;
-      continue;
-    }
-    if (r.date >= targetDate) {
-      continue;
-    }
-    if (!Number.isFinite(r.quantitySold) || r.quantitySold < 0) {
-      excludedInvalidCount += 1;
-      continue;
-    }
-    if (isClosedServiceDate(r.date, config)) {
-      excludedClosedCount += 1;
-      continue;
-    }
-
-    const normalizedDow = getDayOfWeekFromIso(r.date);
-    const existing = byDate.get(r.date);
-    if (existing) {
-      byDate.set(r.date, {
-        ...existing,
-        dayOfWeek: normalizedDow,
-        quantitySold: existing.quantitySold + r.quantitySold,
-        revenue: existing.revenue + (Number.isFinite(r.revenue) && r.revenue >= 0 ? r.revenue : 0)
-      });
-    } else {
-      byDate.set(r.date, {
-        ...r,
-        dayOfWeek: normalizedDow,
-        revenue: Number.isFinite(r.revenue) && r.revenue >= 0 ? r.revenue : 0
-      });
-    }
-  }
-
-  const validRecords = Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
-  return { validRecords, excludedInvalidCount, excludedClosedCount };
+function getClosedDateSet(closedDays: ClosedDayRecord[]): Set<string> {
+  return new Set(closedDays.map(c => c.date));
 }
 
 export function evaluateDataSufficiency(
   salesHistory: SaleRecord[],
   dishId: string,
   targetDate: string,
-  config: ForecastConfig = DEFAULT_FORECAST_CONFIG
+  closedDays: ClosedDayRecord[] = []
 ): DataSufficiencyStatus {
-  const targetDayOfWeek = getDayOfWeekFromIso(targetDate);
-  const { validRecords, excludedInvalidCount, excludedClosedCount } = sanitizeHistoricalRecords(
-    salesHistory,
-    dishId,
-    targetDate,
-    config
+  const target = new Date(targetDate);
+  const targetDayOfWeek = target.getDay();
+  const closedSet = getClosedDateSet(closedDays);
+
+  const validRecords = salesHistory.filter(
+    r => r.menuItemId === dishId && r.date < targetDate && !closedSet.has(r.date)
   );
 
+  const distinctDates = Array.from(new Set(validRecords.map(r => r.date)));
   const sameWeekdayRecords = validRecords.filter(r => r.dayOfWeek === targetDayOfWeek);
-  const totalDays = validRecords.length;
+
+  const totalDays = distinctDates.length;
   const sameWeekdayCount = sameWeekdayRecords.length;
 
-  if (sameWeekdayCount >= config.lookbackWeeks && totalDays >= 28) {
+  if (sameWeekdayCount >= 4 && totalDays >= 28) {
     return {
       isSufficient: true,
       totalDays,
       sameWeekdayCount,
-      excludedInvalidCount,
-      excludedClosedCount,
       status: 'optimal',
-      message: `Optimal depth: ${sameWeekdayCount} matching weekday cycles across ${totalDays} operating days.`
+      message: `Optimal data depth: ${sameWeekdayCount} full same-weekday cycles across ${totalDays} operating days.`
     };
   }
 
@@ -175,10 +92,8 @@ export function evaluateDataSufficiency(
       isSufficient: true,
       totalDays,
       sameWeekdayCount,
-      excludedInvalidCount,
-      excludedClosedCount,
       status: 'moderate',
-      message: `Moderate depth: ${sameWeekdayCount} matching weekdays across ${totalDays} operating days. Wider confidence intervals applied.`
+      message: `Moderate data depth: ${sameWeekdayCount} same-weekday records available. Uncertainty band widened.`
     };
   }
 
@@ -186,10 +101,8 @@ export function evaluateDataSufficiency(
     isSufficient: false,
     totalDays,
     sameWeekdayCount,
-    excludedInvalidCount,
-    excludedClosedCount,
     status: 'insufficient',
-    message: `Limited history (${sameWeekdayCount} matching weekdays, ${totalDays} days). Transparent fallback baseline applied.`
+    message: `Insufficient history (${sameWeekdayCount} matching weekday records). Using transparent baseline prediction.`
   };
 }
 
@@ -197,80 +110,91 @@ export function calculateNaiveBaseline(
   salesHistory: SaleRecord[],
   dishId: string,
   targetDate: string,
-  config: ForecastConfig = DEFAULT_FORECAST_CONFIG
+  closedDays: ClosedDayRecord[] = []
 ): number {
-  const { validRecords } = sanitizeHistoricalRecords(salesHistory, dishId, targetDate, config);
-  if (validRecords.length === 0) return config.defaultColdStartBaseline;
+  const closedSet = getClosedDateSet(closedDays);
+  const target = new Date(targetDate);
+  const sevenDaysAgo = new Date(target);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const dateStr = sevenDaysAgo.toISOString().split('T')[0];
 
-  const sevenDaysAgo = addDaysIso(targetDate, -7);
-  const matched = validRecords.find(r => r.date === sevenDaysAgo);
-  if (matched) return Math.round(matched.quantitySold);
+  const matched = salesHistory.filter(
+    r => r.menuItemId === dishId && r.date === dateStr && !closedSet.has(r.date)
+  );
 
-  const targetDow = getDayOfWeekFromIso(targetDate);
-  const sameDow = validRecords.find(r => r.dayOfWeek === targetDow);
-  if (sameDow) return Math.round(sameDow.quantitySold);
+  if (matched.length > 0) {
+    return matched.reduce((sum, r) => sum + r.quantitySold, 0);
+  }
 
-  return Math.round(validRecords[0].quantitySold);
+  const validRecords = salesHistory
+    .filter(r => r.menuItemId === dishId && r.date < targetDate && !closedSet.has(r.date))
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  return validRecords.length > 0 ? validRecords[0].quantitySold : 16;
+}
+
+function aggregateByDate(records: SaleRecord[]): { date: string; dayOfWeek: number; quantitySold: number }[] {
+  const byDate = new Map<string, { date: string; dayOfWeek: number; quantitySold: number }>();
+  for (const r of records) {
+    const existing = byDate.get(r.date);
+    if (existing) {
+      existing.quantitySold += r.quantitySold;
+    } else {
+      byDate.set(r.date, {
+        date: r.date,
+        dayOfWeek: r.dayOfWeek,
+        quantitySold: r.quantitySold
+      });
+    }
+  }
+  return Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
 }
 
 export function calculateWeightedMovingAverage(
   salesHistory: SaleRecord[],
   dishId: string,
   targetDate: string,
-  config: ForecastConfig = DEFAULT_FORECAST_CONFIG
+  closedDays: ClosedDayRecord[] = []
 ): { baseForecast: number; stdDev: number; historicalPoints: number[] } {
-  const targetDayOfWeek = getDayOfWeekFromIso(targetDate);
-  const { validRecords } = sanitizeHistoricalRecords(salesHistory, dishId, targetDate, config);
+  const closedSet = getClosedDateSet(closedDays);
+  const target = new Date(targetDate);
+  const targetDayOfWeek = target.getDay();
 
-  const sameDayRecords = validRecords
+  const dishRecords = salesHistory.filter(
+    r => r.menuItemId === dishId && r.date < targetDate && !closedSet.has(r.date)
+  );
+  const dailyAggregates = aggregateByDate(dishRecords);
+
+  const sameDayRecords = dailyAggregates
     .filter(r => r.dayOfWeek === targetDayOfWeek)
-    .slice(0, config.lookbackWeeks);
+    .slice(0, 4);
 
   if (sameDayRecords.length === 0) {
-    const recentRecords = validRecords.slice(0, 14);
-    if (recentRecords.length === 0) {
-      return {
-        baseForecast: config.defaultColdStartBaseline,
-        stdDev: Math.max(3, Math.round(config.defaultColdStartBaseline * 0.25)),
-        historicalPoints: []
-      };
+    const recentAll = dailyAggregates.slice(0, 14);
+    if (recentAll.length === 0) {
+      return { baseForecast: 16, stdDev: 4.5, historicalPoints: [16] };
     }
-
-    const quantities = recentRecords.map(r => r.quantitySold);
-    const mean = quantities.reduce((sum, q) => sum + q, 0) / quantities.length;
-    const variance = quantities.reduce((sum, q) => sum + Math.pow(q - mean, 2), 0) / quantities.length;
+    const mean = recentAll.reduce((sum, r) => sum + r.quantitySold, 0) / recentAll.length;
     return {
-      baseForecast: Math.max(0, Math.round(mean)),
-      stdDev: Math.max(2, Math.round(Math.sqrt(variance) * 10) / 10),
-      historicalPoints: quantities
+      baseForecast: Math.max(1, Math.round(mean)),
+      stdDev: 4.0,
+      historicalPoints: recentAll.map(r => r.quantitySold)
     };
   }
 
   const quantities = sameDayRecords.map(r => r.quantitySold);
-  const configuredWeights = config.weekdayWeights.length >= quantities.length
-    ? config.weekdayWeights.slice(0, quantities.length)
-    : quantities.map((_, idx) => Math.max(0.05, 1 / (idx + 1)));
-
-  const weightSum = configuredWeights.reduce((sum, w) => sum + w, 0);
-  if (weightSum <= 0) {
-    const mean = quantities.reduce((sum, q) => sum + q, 0) / quantities.length;
-    return {
-      baseForecast: Math.round(mean),
-      stdDev: 2.5,
-      historicalPoints: quantities
-    };
-  }
+  const weights = [0.40, 0.30, 0.20, 0.10].slice(0, quantities.length);
+  const weightSum = weights.reduce((sum, w) => sum + w, 0);
 
   let weightedSum = 0;
   for (let i = 0; i < quantities.length; i++) {
-    weightedSum += quantities[i] * configuredWeights[i];
+    weightedSum += quantities[i] * weights[i];
   }
 
-  const baseForecast = Math.max(0, Math.round(weightedSum / weightSum));
+  const baseForecast = Math.max(1, Math.round(weightedSum / weightSum));
   const mean = quantities.reduce((sum, q) => sum + q, 0) / quantities.length;
   const variance = quantities.reduce((sum, q) => sum + Math.pow(q - mean, 2), 0) / quantities.length;
-  const sampleFactor = quantities.length < 3 ? 1.35 : 1.0;
-  const stdDev = Math.max(1.5, Math.sqrt(variance) * sampleFactor);
+  const stdDev = Math.max(1.5, Math.sqrt(variance));
 
   return { baseForecast, stdDev, historicalPoints: quantities };
 }
@@ -279,21 +203,26 @@ export function calculateRecentTrendModifier(
   salesHistory: SaleRecord[],
   dishId: string,
   targetDate: string,
-  config: ForecastConfig = DEFAULT_FORECAST_CONFIG
+  closedDays: ClosedDayRecord[] = []
 ): number {
-  const { validRecords } = sanitizeHistoricalRecords(salesHistory, dishId, targetDate, config);
-  const recentRecords = validRecords.slice(0, 7);
-  const earlierRecords = validRecords.slice(7, 14);
+  const closedSet = getClosedDateSet(closedDays);
+  const dishRecords = salesHistory.filter(
+    r => r.menuItemId === dishId && r.date < targetDate && !closedSet.has(r.date)
+  );
+  const dailyAggregates = aggregateByDate(dishRecords);
 
-  if (recentRecords.length < 5 || earlierRecords.length < 5) return 0;
+  const recentRecords = dailyAggregates.slice(0, 7);
+  const earlierRecords = dailyAggregates.slice(7, 14);
+
+  if (recentRecords.length < 4 || earlierRecords.length < 4) return 0;
 
   const recentAvg = recentRecords.reduce((sum, r) => sum + r.quantitySold, 0) / recentRecords.length;
   const earlierAvg = earlierRecords.reduce((sum, r) => sum + r.quantitySold, 0) / earlierRecords.length;
 
-  if (earlierAvg <= 0) return 0;
+  if (earlierAvg === 0) return 0;
 
   const trendDelta = (recentAvg - earlierAvg) / earlierAvg;
-  return Math.max(-0.10, Math.min(0.10, Math.round(trendDelta * 100) / 100));
+  return Math.max(-0.08, Math.min(0.08, Math.round(trendDelta * 100) / 100));
 }
 
 export function evaluateBacktestMetrics(
@@ -301,21 +230,15 @@ export function evaluateBacktestMetrics(
   dishId: string,
   dishName: string,
   lookbackDays: number = 14,
-  config: ForecastConfig = DEFAULT_FORECAST_CONFIG
+  closedDays: ClosedDayRecord[] = []
 ): ModelAccuracyEvaluation {
-  const sanitized = salesHistory
-    .filter(
-      r =>
-        r &&
-        r.menuItemId === dishId &&
-        isValidIsoDate(r.date) &&
-        Number.isFinite(r.quantitySold) &&
-        r.quantitySold >= 0 &&
-        !isClosedServiceDate(r.date, config)
-    )
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const closedSet = getClosedDateSet(closedDays);
+  const dishRecords = salesHistory.filter(
+    r => r.menuItemId === dishId && !closedSet.has(r.date)
+  );
+  const records = aggregateByDate(dishRecords).sort((a, b) => a.date.localeCompare(b.date));
 
-  if (sanitized.length < 15) {
+  if (records.length < 15) {
     return {
       dishId,
       dishName,
@@ -325,148 +248,66 @@ export function evaluateBacktestMetrics(
       wmaMae: 0,
       wmaMape: 0,
       wmaRmse: 0,
-      wmaBias: 0,
       accuracyImprovementPct: 0,
-      forecastBias: 'Balanced',
-      evaluationNote: `Requires at least 15 operating days for rolling-origin evaluation (${sanitized.length} available).`
+      forecastBias: 'Balanced'
     };
   }
 
-  const windowSize = Math.min(lookbackDays, sanitized.length - 7);
-  const testRecords = sanitized.slice(sanitized.length - windowSize);
-
+  const testRecords = records.slice(records.length - lookbackDays);
   let naiveTotalError = 0;
   let naiveTotalPctError = 0;
   let wmaTotalError = 0;
   let wmaTotalPctError = 0;
   let wmaSquaredErrorSum = 0;
   let wmaBiasSum = 0;
-  let validEvalCount = 0;
 
-  for (const actual of testRecords) {
-    const historyBeforeDate = sanitized.filter(r => r.date < actual.date);
-    if (historyBeforeDate.length === 0) continue;
-
-    const naivePred = calculateNaiveBaseline(historyBeforeDate, dishId, actual.date, config);
-    const { baseForecast } = calculateWeightedMovingAverage(historyBeforeDate, dishId, actual.date, config);
+  testRecords.forEach(actual => {
+    const historyBeforeDate = dishRecords.filter(r => r.date < actual.date);
+    const naivePred = calculateNaiveBaseline(historyBeforeDate, dishId, actual.date, closedDays);
+    const { baseForecast } = calculateWeightedMovingAverage(historyBeforeDate, dishId, actual.date, closedDays);
 
     const naiveErr = Math.abs(naivePred - actual.quantitySold);
     const wmaErr = Math.abs(baseForecast - actual.quantitySold);
 
     naiveTotalError += naiveErr;
     naiveTotalPctError += naiveErr / Math.max(1, actual.quantitySold);
+
     wmaTotalError += wmaErr;
     wmaTotalPctError += wmaErr / Math.max(1, actual.quantitySold);
     wmaSquaredErrorSum += Math.pow(wmaErr, 2);
     wmaBiasSum += baseForecast - actual.quantitySold;
-    validEvalCount += 1;
-  }
+  });
 
-  if (validEvalCount === 0) {
-    return {
-      dishId,
-      dishName,
-      evaluatedDaysCount: 0,
-      naiveMae: 0,
-      naiveMape: 0,
-      wmaMae: 0,
-      wmaMape: 0,
-      wmaRmse: 0,
-      wmaBias: 0,
-      accuracyImprovementPct: 0,
-      forecastBias: 'Balanced',
-      evaluationNote: 'Insufficient strictly prior observations for evaluation.'
-    };
-  }
-
-  const naiveMae = Math.round((naiveTotalError / validEvalCount) * 10) / 10;
-  const naiveMape = Math.round((naiveTotalPctError / validEvalCount) * 1000) / 10;
-  const wmaMae = Math.round((wmaTotalError / validEvalCount) * 10) / 10;
-  const wmaMape = Math.round((wmaTotalPctError / validEvalCount) * 1000) / 10;
-  const wmaRmse = Math.round(Math.sqrt(wmaSquaredErrorSum / validEvalCount) * 10) / 10;
-  const wmaBias = Math.round((wmaBiasSum / validEvalCount) * 10) / 10;
+  const count = testRecords.length;
+  const naiveMae = Math.round((naiveTotalError / count) * 10) / 10;
+  const naiveMape = Math.round((naiveTotalPctError / count) * 1000) / 10;
+  const wmaMae = Math.round((wmaTotalError / count) * 10) / 10;
+  const wmaMape = Math.round((wmaTotalPctError / count) * 1000) / 10;
+  const wmaRmse = Math.round(Math.sqrt(wmaSquaredErrorSum / count) * 10) / 10;
 
   const accuracyImprovementPct = naiveMape > 0
     ? Math.round(((naiveMape - wmaMape) / naiveMape) * 1000) / 10
     : 0;
 
-  const forecastBias = wmaBias > 1.2
+  const avgBias = wmaBiasSum / count;
+  const forecastBias = avgBias > 1.2
     ? 'Over-forecasting'
-    : wmaBias < -1.2
+    : avgBias < -1.2
     ? 'Under-forecasting'
     : 'Balanced';
 
   return {
     dishId,
     dishName,
-    evaluatedDaysCount: validEvalCount,
+    evaluatedDaysCount: count,
     naiveMae,
     naiveMape,
     wmaMae,
     wmaMape,
     wmaRmse,
-    wmaBias,
     accuracyImprovementPct,
-    forecastBias,
-    evaluationNote: `Evaluated across ${validEvalCount} out-of-sample days without lookahead leakage.`
+    forecastBias
   };
-}
-
-export function calculateHeuristicContextModifier(
-  dish: MenuItem,
-  dayOfWeek: number,
-  weather: { condition: string; temperatureC: number; precipChance: number },
-  eventContext: string
-): { modifierPct: number; rationaleParts: string[] } {
-  let modifierPct = 0;
-  const rationaleParts: string[] = [];
-
-  if (weather.condition === 'Rain' || weather.condition === 'Storm' || weather.precipChance >= 60) {
-    if (dish.station === 'Saute') {
-      modifierPct += 0.16;
-      rationaleParts.push('Rain & cool temp (+16% warm saute entrees)');
-    } else if (dish.station === 'Garde Manger') {
-      modifierPct -= 0.14;
-      rationaleParts.push('Precipitation reduces cold salad walk-ins (-14%)');
-    } else if (dish.station === 'Bakery') {
-      modifierPct += 0.05;
-      rationaleParts.push('Comfort bread accompaniment demand (+5%)');
-    }
-  } else if ((weather.condition === 'Clear' && weather.temperatureC >= 22) || weather.temperatureC >= 28) {
-    if (dish.station === 'Garde Manger') {
-      modifierPct += 0.18;
-      rationaleParts.push('Warm clear weather lifts cold salads (+18%)');
-    } else if (dish.station === 'Saute') {
-      modifierPct -= 0.08;
-      rationaleParts.push('Warm weather moderates heavy cream pasta (-8%)');
-    }
-  }
-
-  const lowerEvent = eventContext.toLowerCase();
-  if (lowerEvent.includes('friday') || lowerEvent.includes('payday') || dayOfWeek === 5) {
-    if (dish.id.includes('steak') || dish.station === 'Grill') {
-      modifierPct += 0.12;
-      rationaleParts.push('Friday protein & grill uplift (+12%)');
-    }
-  }
-
-  if (lowerEvent.includes('theater') || lowerEvent.includes('fair') || lowerEvent.includes('holiday') || lowerEvent.includes('marathon')) {
-    modifierPct += 0.10;
-    rationaleParts.push('Local foot-traffic event boost (+10%)');
-  }
-
-  return { modifierPct, rationaleParts };
-}
-
-export function clampAdjustmentMultiplier(
-  rawMultiplier: number,
-  maxDecreasePct: number,
-  maxIncreasePct: number
-): number {
-  if (!Number.isFinite(rawMultiplier)) return 0;
-  const minClamp = -1 * (Math.max(0, maxDecreasePct) / 100);
-  const maxClamp = Math.max(0, maxIncreasePct) / 100;
-  return Math.max(minClamp, Math.min(maxClamp, rawMultiplier));
 }
 
 export function generateComprehensiveForecast(
@@ -475,17 +316,24 @@ export function generateComprehensiveForecast(
   targetDate: string,
   weather: { condition: string; temperatureC: number; precipChance: number },
   eventContext: string,
-  config: ForecastConfig = DEFAULT_FORECAST_CONFIG,
-  aiAdjustment?: ContextualDishAdjustment | null
+  options?: {
+    closedDays?: ClosedDayRecord[];
+    settings?: AppSettings;
+    geminiAdjustment?: GeminiDishAdjustment;
+  }
 ): DishForecastResult {
-  const dayOfWeek = getDayOfWeekFromIso(targetDate);
-  const dataSufficiency = evaluateDataSufficiency(salesHistory, dish.id, targetDate, config);
-  const naivePrediction = calculateNaiveBaseline(salesHistory, dish.id, targetDate, config);
-  const { baseForecast, stdDev } = calculateWeightedMovingAverage(salesHistory, dish.id, targetDate, config);
+  const closedDays = options?.closedDays || [];
+  const limitPct = options?.settings?.aiAdjustmentLimitPct ?? 15;
+  const stationBufferPct = ((options?.settings?.stationBuffers?.[dish.station] ?? (dish.station === 'Bakery' || dish.station === 'Garde Manger' ? 5 : dish.station === 'Saute' ? 10 : 8)) / 100);
 
-  const stationBuffer = (config.stationBuffers[dish.station] ?? 8) / 100;
+  const target = new Date(targetDate);
+  const dayOfWeek = target.getDay();
+  const closedEntry = closedDays.find(c => c.date === targetDate);
+  const dataSufficiency = evaluateDataSufficiency(salesHistory, dish.id, targetDate, closedDays);
+  const naivePrediction = calculateNaiveBaseline(salesHistory, dish.id, targetDate, closedDays);
+  const { baseForecast, stdDev } = calculateWeightedMovingAverage(salesHistory, dish.id, targetDate, closedDays);
 
-  if (isClosedServiceDate(targetDate, config)) {
+  if (closedEntry) {
     return {
       dishId: dish.id,
       dishName: dish.name,
@@ -495,7 +343,7 @@ export function generateComprehensiveForecast(
       dayOfWeek,
       isClosedDay: true,
       dataSufficiency,
-      naivePrediction: 0,
+      naivePrediction,
       baseStatisticalForecast: baseForecast,
       trendAdjustmentPct: 0,
       contextModifierPct: 0,
@@ -506,75 +354,93 @@ export function generateComprehensiveForecast(
       safetyBufferPct: 0,
       recommendedPrep: 0,
       historicalVolatilityStdDev: Math.round(stdDev * 10) / 10,
-      confidenceScore: 1,
-      rationale: 'Restaurant configured as closed for this service date. Prep par set to 0.',
-      riskOfWaste: 'Low',
-      predictionSource: 'closed-day'
+      rationale: `Restaurant marked closed on ${targetDate} (${closedEntry.reason}). Zero prep recommended.`,
+      adjustmentSource: 'closed',
+      riskOfWaste: 'Low'
     };
   }
 
-  const trendAdjustmentPct = calculateRecentTrendModifier(salesHistory, dish.id, targetDate, config);
+  const trendAdjustmentPct = dataSufficiency.status === 'insufficient'
+    ? 0
+    : calculateRecentTrendModifier(salesHistory, dish.id, targetDate, closedDays);
 
-  let rawModifierPct: number;
-  let rationale: string;
-  let riskOfWaste: 'Low' | 'Medium' | 'High';
-  let predictionSource: 'ai-assisted' | 'deterministic-fallback' = 'deterministic-fallback';
+  const minClamp = -1 * (limitPct / 100);
+  const maxClamp = limitPct / 100;
 
-  if (aiAdjustment) {
-    rawModifierPct = aiAdjustment.suggestedMultiplier + trendAdjustmentPct * 0.5;
-    rationale = aiAdjustment.rationale;
-    riskOfWaste = aiAdjustment.riskOfWaste;
-    predictionSource = 'ai-assisted';
+  let contextModifierPct = trendAdjustmentPct;
+  let rationaleParts: string[] = [];
+  let adjustmentSource: 'gemini' | 'statistical_heuristic' = 'statistical_heuristic';
+  let riskOfWaste: 'Low' | 'Medium' | 'High' = 'Low';
+
+  if (options?.geminiAdjustment) {
+    adjustmentSource = 'gemini';
+    contextModifierPct = options.geminiAdjustment.suggestedMultiplier;
+    rationaleParts.push(options.geminiAdjustment.rationale);
+    riskOfWaste = options.geminiAdjustment.riskOfWaste;
   } else {
-    const heuristic = calculateHeuristicContextModifier(dish, dayOfWeek, weather, eventContext);
-    rawModifierPct = trendAdjustmentPct + heuristic.modifierPct;
-    const rationaleParts: string[] = [];
     if (trendAdjustmentPct !== 0) {
-      rationaleParts.push(
-        `7-day trend (${trendAdjustmentPct > 0 ? '+' : ''}${Math.round(trendAdjustmentPct * 100)}%)`
-      );
+      rationaleParts.push(`7-day trend (${trendAdjustmentPct > 0 ? '+' : ''}${Math.round(trendAdjustmentPct * 100)}%)`);
     }
-    rationaleParts.push(...heuristic.rationaleParts);
-    if (!dataSufficiency.isSufficient) {
-      rationaleParts.push('Cold-start baseline fallback active');
+
+    if (weather.condition === 'Rain' || weather.condition === 'Storm' || weather.precipChance >= 60) {
+      if (dish.station === 'Saute') {
+        contextModifierPct += 0.12;
+        rationaleParts.push('Rain & cool temp (+12% warm entrees)');
+      } else if (dish.station === 'Garde Manger') {
+        contextModifierPct -= 0.12;
+        rationaleParts.push('Precipitation suppresses cold salads (-12%)');
+      } else if (dish.station === 'Bakery') {
+        contextModifierPct += 0.04;
+        rationaleParts.push('Steady bakery accompaniment (+4%)');
+      }
+    } else if (weather.condition === 'Clear' && weather.temperatureC >= 22) {
+      if (dish.station === 'Garde Manger') {
+        contextModifierPct += 0.12;
+        rationaleParts.push('Warm sunny weather boosts cold salads (+12%)');
+      } else if (dish.station === 'Saute') {
+        contextModifierPct -= 0.06;
+        rationaleParts.push('Warm weather moderates heavy pasta (-6%)');
+      }
     }
-    rationale = rationaleParts.length > 0
-      ? `${rationaleParts.join('; ')}.`
-      : 'Steady 4-week same-weekday baseline forecast.';
-    riskOfWaste = rawModifierPct < -0.10 || dish.station === 'Bakery'
+
+    if (eventContext.includes('Friday') || eventContext.includes('Payday') || dayOfWeek === 5) {
+      if (dish.station === 'Grill') {
+        contextModifierPct += 0.08;
+        rationaleParts.push('Friday service protein demand (+8%)');
+      }
+    }
+  }
+
+  const clampedModifierPct = Math.round(Math.max(minClamp, Math.min(maxClamp, contextModifierPct)) * 1000) / 1000;
+  const effectiveModifier = dataSufficiency.status === 'insufficient'
+    ? Math.max(0, clampedModifierPct)
+    : clampedModifierPct;
+
+  const expectedSales = Math.max(1, Math.round(baseForecast * (1 + effectiveModifier)));
+
+  const uncertaintyFactor = dataSufficiency.status === 'optimal' ? 1 : dataSufficiency.status === 'moderate' ? 1.35 : 1.75;
+  const effectiveStdDev = stdDev * uncertaintyFactor;
+
+  const interval80Min = Math.max(1, Math.round(expectedSales - 1.28 * effectiveStdDev));
+  const interval80Max = Math.round(expectedSales + 1.28 * effectiveStdDev);
+  const interval95Min = Math.max(1, Math.round(expectedSales - 1.96 * effectiveStdDev));
+  const interval95Max = Math.round(expectedSales + 1.96 * effectiveStdDev);
+
+  const recommendedPrep = Math.ceil(expectedSales * (1 + stationBufferPct));
+
+  if (!options?.geminiAdjustment) {
+    riskOfWaste = effectiveModifier <= -0.08 || dish.station === 'Bakery'
       ? 'High'
-      : rawModifierPct > 0.15
+      : effectiveModifier >= 0.10
       ? 'Medium'
       : 'Low';
   }
 
-  const clampedModifierPct = clampAdjustmentMultiplier(
-    rawModifierPct,
-    config.maxDecreasePct,
-    config.maxIncreasePct
-  );
-
-  const expectedSales = Math.max(0, Math.round(baseForecast * (1 + clampedModifierPct)));
-  const effectiveStdDev = dataSufficiency.status === 'optimal'
-    ? stdDev
-    : dataSufficiency.status === 'moderate'
-    ? stdDev * 1.25
-    : Math.max(stdDev * 1.5, baseForecast * 0.25);
-
-  const z80 = 1.28;
-  const z95 = 1.96;
-  const interval80Min = Math.max(0, Math.round(expectedSales - z80 * effectiveStdDev));
-  const interval80Max = Math.round(expectedSales + z80 * effectiveStdDev);
-  const interval95Min = Math.max(0, Math.round(expectedSales - z95 * effectiveStdDev));
-  const interval95Max = Math.round(expectedSales + z95 * effectiveStdDev);
-
-  const extraUncertaintyBuffer = dataSufficiency.isSufficient ? 0 : 0.03;
-  const effectiveBuffer = stationBuffer + extraUncertaintyBuffer;
-  const recommendedPrep = expectedSales > 0 ? Math.ceil(expectedSales * (1 + effectiveBuffer)) : 0;
-
-  const cv = baseForecast > 0 ? effectiveStdDev / baseForecast : 0.5;
-  const depthPenalty = dataSufficiency.status === 'optimal' ? 0 : dataSufficiency.status === 'moderate' ? 0.12 : 0.28;
-  const confidenceScore = Math.max(0.35, Math.min(0.96, Math.round((0.95 - cv * 0.6 - depthPenalty) * 100) / 100));
+  const baseRationale = dataSufficiency.status === 'insufficient'
+    ? 'Limited history: baseline statistical estimate applied without downward reduction.'
+    : rationaleParts.length > 0
+    ? rationaleParts.join('; ')
+    : 'Steady 4-week day-of-week statistical baseline.';
 
   return {
     dishId: dish.id,
@@ -588,17 +454,16 @@ export function generateComprehensiveForecast(
     naivePrediction,
     baseStatisticalForecast: baseForecast,
     trendAdjustmentPct,
-    contextModifierPct: Math.round(rawModifierPct * 100) / 100,
-    clampedModifierPct: Math.round(clampedModifierPct * 100) / 100,
+    contextModifierPct: Math.round(contextModifierPct * 1000) / 1000,
+    clampedModifierPct: effectiveModifier,
     expectedSales,
     confidenceInterval80: [interval80Min, interval80Max],
     confidenceInterval95: [interval95Min, interval95Max],
-    safetyBufferPct: Math.round(effectiveBuffer * 1000) / 1000,
+    safetyBufferPct: stationBufferPct,
     recommendedPrep,
     historicalVolatilityStdDev: Math.round(effectiveStdDev * 10) / 10,
-    confidenceScore,
-    rationale,
-    riskOfWaste,
-    predictionSource
+    rationale: baseRationale,
+    adjustmentSource,
+    riskOfWaste
   };
 }

@@ -1,11 +1,11 @@
-import { Restaurant, Ingredient, MenuItem, SaleRecord } from '../types';
+import { Restaurant, Ingredient, MenuItem, SaleRecord, AppSettings, WasteRecord } from '../types';
 
 export const BENCHMARK_METADATA = {
   datasetId: 'rst_rustic_table_v1',
   version: '1.0.0',
   name: 'The Rustic Table Benchmark Dataset',
   archetype: 'Fast Casual Bistro & Grill',
-  generatedDate: '2026-11-12',
+  generatedDate: '2026-11-13',
   description: 'Verified 30-day simulated historical operational dataset for single-location kitchen benchmarking',
   isDemonstrationData: true
 };
@@ -20,27 +20,49 @@ export const BENCHMARK_RESTAURANT: Restaurant = {
   version: '1.0.0'
 };
 
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  id: 'settings_rst_rustic_table',
+  restaurantId: 'rst_rustic_table',
+  restaurantName: 'The Rustic Table',
+  concept: 'Bistro & Seasonal Kitchen',
+  currency: '$',
+  aiAdjustmentLimitPct: 15,
+  stationBuffers: {
+    Grill: 8,
+    Saute: 10,
+    'Garde Manger': 5,
+    Bakery: 5
+  },
+  updatedAt: Date.now()
+};
+
+function offsetDate(baseDate: string, daysOffset: number): string {
+  const d = new Date(baseDate);
+  d.setDate(d.getDate() + daysOffset);
+  return d.toISOString().split('T')[0];
+}
+
 export const BENCHMARK_INGREDIENTS: Ingredient[] = [
-  { id: 'ing_chicken', restaurantId: 'rst_rustic_table', name: 'Free-Range Chicken Breast', category: 'Protein', unit: 'kg', unitCost: 9.50, currentStock: 18.5, safetyStock: 8.0, shelfLifeDays: 3, isDemonstrationData: true },
-  { id: 'ing_beef_sirloin', restaurantId: 'rst_rustic_table', name: 'Prime Sirloin Steak', category: 'Protein', unit: 'kg', unitCost: 19.80, currentStock: 12.0, safetyStock: 6.0, shelfLifeDays: 4, isDemonstrationData: true },
-  { id: 'ing_salmon', restaurantId: 'rst_rustic_table', name: 'Atlantic Salmon Fillet', category: 'Protein', unit: 'kg', unitCost: 22.00, currentStock: 9.0, safetyStock: 5.0, shelfLifeDays: 2, isDemonstrationData: true },
-  { id: 'ing_tofu', restaurantId: 'rst_rustic_table', name: 'Organic Firm Tofu', category: 'Protein', unit: 'kg', unitCost: 4.20, currentStock: 14.0, safetyStock: 4.0, shelfLifeDays: 7, isDemonstrationData: true },
-  { id: 'ing_jasmine_rice', restaurantId: 'rst_rustic_table', name: 'Jasmine Rice', category: 'Dry Goods', unit: 'kg', unitCost: 2.10, currentStock: 45.0, safetyStock: 15.0, shelfLifeDays: 90, isDemonstrationData: true },
-  { id: 'ing_penne_pasta', restaurantId: 'rst_rustic_table', name: 'Artisan Penne Pasta', category: 'Dry Goods', unit: 'kg', unitCost: 2.80, currentStock: 25.0, safetyStock: 10.0, shelfLifeDays: 90, isDemonstrationData: true },
-  { id: 'ing_heavy_cream', restaurantId: 'rst_rustic_table', name: 'Heavy Cream 36%', category: 'Dairy', unit: 'L', unitCost: 4.50, currentStock: 12.0, safetyStock: 5.0, shelfLifeDays: 7, isDemonstrationData: true },
-  { id: 'ing_butter', restaurantId: 'rst_rustic_table', name: 'Unsalted Butter', category: 'Dairy', unit: 'kg', unitCost: 7.20, currentStock: 16.0, safetyStock: 6.0, shelfLifeDays: 30, isDemonstrationData: true },
-  { id: 'ing_parmesan', restaurantId: 'rst_rustic_table', name: 'Parmigiano Reggiano', category: 'Dairy', unit: 'kg', unitCost: 18.50, currentStock: 6.5, safetyStock: 3.0, shelfLifeDays: 45, isDemonstrationData: true },
-  { id: 'ing_onions', restaurantId: 'rst_rustic_table', name: 'Yellow Onions', category: 'Produce', unit: 'kg', unitCost: 1.40, currentStock: 30.0, safetyStock: 10.0, shelfLifeDays: 14, isDemonstrationData: true },
-  { id: 'ing_mushrooms', restaurantId: 'rst_rustic_table', name: 'Cremini Mushrooms', category: 'Produce', unit: 'kg', unitCost: 5.80, currentStock: 8.0, safetyStock: 4.0, shelfLifeDays: 4, isDemonstrationData: true },
-  { id: 'ing_romaine', restaurantId: 'rst_rustic_table', name: 'Crisp Romaine Lettuce', category: 'Produce', unit: 'kg', unitCost: 3.20, currentStock: 11.0, safetyStock: 6.0, shelfLifeDays: 3, isDemonstrationData: true },
-  { id: 'ing_kale', restaurantId: 'rst_rustic_table', name: 'Tuscan Lacinato Kale', category: 'Produce', unit: 'kg', unitCost: 4.00, currentStock: 7.0, safetyStock: 3.5, shelfLifeDays: 4, isDemonstrationData: true },
-  { id: 'ing_cherry_tomatoes', restaurantId: 'rst_rustic_table', name: 'Heirloom Cherry Tomatoes', category: 'Produce', unit: 'kg', unitCost: 4.90, currentStock: 9.5, safetyStock: 4.0, shelfLifeDays: 4, isDemonstrationData: true },
-  { id: 'ing_avocado', restaurantId: 'rst_rustic_table', name: 'Hass Avocados', category: 'Produce', unit: 'kg', unitCost: 6.50, currentStock: 7.0, safetyStock: 3.0, shelfLifeDays: 3, isDemonstrationData: true },
-  { id: 'ing_olive_oil', restaurantId: 'rst_rustic_table', name: 'Extra Virgin Olive Oil', category: 'Pantry', unit: 'L', unitCost: 9.00, currentStock: 22.0, safetyStock: 8.0, shelfLifeDays: 180, isDemonstrationData: true },
-  { id: 'ing_flour', restaurantId: 'rst_rustic_table', name: 'Bread Flour Unbleached', category: 'Bakery', unit: 'kg', unitCost: 1.80, currentStock: 50.0, safetyStock: 20.0, shelfLifeDays: 60, isDemonstrationData: true },
-  { id: 'ing_sourdough_starter', restaurantId: 'rst_rustic_table', name: 'Active Sourdough Levain', category: 'Bakery', unit: 'kg', unitCost: 3.00, currentStock: 6.0, safetyStock: 2.0, shelfLifeDays: 5, isDemonstrationData: true },
-  { id: 'ing_cane_sugar', restaurantId: 'rst_rustic_table', name: 'Pure Cane Sugar', category: 'Bakery', unit: 'kg', unitCost: 1.60, currentStock: 35.0, safetyStock: 10.0, shelfLifeDays: 180, isDemonstrationData: true },
-  { id: 'ing_eggs', restaurantId: 'rst_rustic_table', name: 'Cage-Free Fresh Eggs', category: 'Dairy', unit: 'pcs', unitCost: 0.32, currentStock: 180, safetyStock: 60, shelfLifeDays: 14, isDemonstrationData: true }
+  { id: 'ing_chicken', restaurantId: 'rst_rustic_table', name: 'Free-Range Chicken Breast', category: 'Protein', unit: 'kg', unitCost: 9.50, currentStock: 18.5, safetyStock: 8.0, shelfLifeDays: 3, expirationDate: offsetDate('2026-11-13', 2), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_beef_sirloin', restaurantId: 'rst_rustic_table', name: 'Prime Sirloin Steak', category: 'Protein', unit: 'kg', unitCost: 19.80, currentStock: 12.0, safetyStock: 6.0, shelfLifeDays: 4, expirationDate: offsetDate('2026-11-13', 3), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_salmon', restaurantId: 'rst_rustic_table', name: 'Atlantic Salmon Fillet', category: 'Protein', unit: 'kg', unitCost: 22.00, currentStock: 4.5, safetyStock: 5.0, shelfLifeDays: 2, expirationDate: offsetDate('2026-11-13', 1), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_tofu', restaurantId: 'rst_rustic_table', name: 'Organic Firm Tofu', category: 'Protein', unit: 'kg', unitCost: 4.20, currentStock: 14.0, safetyStock: 4.0, shelfLifeDays: 7, expirationDate: offsetDate('2026-11-13', 6), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_jasmine_rice', restaurantId: 'rst_rustic_table', name: 'Jasmine Rice', category: 'Dry Goods', unit: 'kg', unitCost: 2.10, currentStock: 45.0, safetyStock: 15.0, shelfLifeDays: 90, expirationDate: offsetDate('2026-11-13', 85), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_penne_pasta', restaurantId: 'rst_rustic_table', name: 'Artisan Penne Pasta', category: 'Dry Goods', unit: 'kg', unitCost: 2.80, currentStock: 25.0, safetyStock: 10.0, shelfLifeDays: 90, expirationDate: offsetDate('2026-11-13', 80), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_heavy_cream', restaurantId: 'rst_rustic_table', name: 'Heavy Cream 36%', category: 'Dairy', unit: 'L', unitCost: 4.50, currentStock: 12.0, safetyStock: 5.0, shelfLifeDays: 7, expirationDate: offsetDate('2026-11-13', 5), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_butter', restaurantId: 'rst_rustic_table', name: 'Unsalted Butter', category: 'Dairy', unit: 'kg', unitCost: 7.20, currentStock: 16.0, safetyStock: 6.0, shelfLifeDays: 30, expirationDate: offsetDate('2026-11-13', 24), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_parmesan', restaurantId: 'rst_rustic_table', name: 'Parmigiano Reggiano', category: 'Dairy', unit: 'kg', unitCost: 18.50, currentStock: 6.5, safetyStock: 3.0, shelfLifeDays: 45, expirationDate: offsetDate('2026-11-13', 38), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_onions', restaurantId: 'rst_rustic_table', name: 'Yellow Onions', category: 'Produce', unit: 'kg', unitCost: 1.40, currentStock: 30.0, safetyStock: 10.0, shelfLifeDays: 14, expirationDate: offsetDate('2026-11-13', 11), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_mushrooms', restaurantId: 'rst_rustic_table', name: 'Cremini Mushrooms', category: 'Produce', unit: 'kg', unitCost: 5.80, currentStock: 8.0, safetyStock: 4.0, shelfLifeDays: 4, expirationDate: offsetDate('2026-11-13', 2), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_romaine', restaurantId: 'rst_rustic_table', name: 'Crisp Romaine Lettuce', category: 'Produce', unit: 'kg', unitCost: 3.20, currentStock: 5.0, safetyStock: 6.0, shelfLifeDays: 3, expirationDate: offsetDate('2026-11-13', 1), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_kale', restaurantId: 'rst_rustic_table', name: 'Tuscan Lacinato Kale', category: 'Produce', unit: 'kg', unitCost: 4.00, currentStock: 7.0, safetyStock: 3.5, shelfLifeDays: 4, expirationDate: offsetDate('2026-11-13', 3), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_cherry_tomatoes', restaurantId: 'rst_rustic_table', name: 'Heirloom Cherry Tomatoes', category: 'Produce', unit: 'kg', unitCost: 4.90, currentStock: 9.5, safetyStock: 4.0, shelfLifeDays: 4, expirationDate: offsetDate('2026-11-13', 3), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_avocado', restaurantId: 'rst_rustic_table', name: 'Hass Avocados', category: 'Produce', unit: 'kg', unitCost: 6.50, currentStock: 7.0, safetyStock: 3.0, shelfLifeDays: 3, expirationDate: offsetDate('2026-11-13', 2), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_olive_oil', restaurantId: 'rst_rustic_table', name: 'Extra Virgin Olive Oil', category: 'Pantry', unit: 'L', unitCost: 9.00, currentStock: 22.0, safetyStock: 8.0, shelfLifeDays: 180, expirationDate: offsetDate('2026-11-13', 160), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_flour', restaurantId: 'rst_rustic_table', name: 'Bread Flour Unbleached', category: 'Bakery', unit: 'kg', unitCost: 1.80, currentStock: 50.0, safetyStock: 20.0, shelfLifeDays: 60, expirationDate: offsetDate('2026-11-13', 50), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_sourdough_starter', restaurantId: 'rst_rustic_table', name: 'Active Sourdough Levain', category: 'Bakery', unit: 'kg', unitCost: 3.00, currentStock: 6.0, safetyStock: 2.0, shelfLifeDays: 5, expirationDate: offsetDate('2026-11-13', 4), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_cane_sugar', restaurantId: 'rst_rustic_table', name: 'Pure Cane Sugar', category: 'Bakery', unit: 'kg', unitCost: 1.60, currentStock: 35.0, safetyStock: 10.0, shelfLifeDays: 180, expirationDate: offsetDate('2026-11-13', 170), isAvailable: true, isDemonstrationData: true },
+  { id: 'ing_eggs', restaurantId: 'rst_rustic_table', name: 'Cage-Free Fresh Eggs', category: 'Dairy', unit: 'pcs', unitCost: 0.32, currentStock: 180, safetyStock: 60, shelfLifeDays: 14, expirationDate: offsetDate('2026-11-13', 10), isAvailable: true, isDemonstrationData: true }
 ];
 
 export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
@@ -53,6 +75,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 16.50,
     targetCost: 4.80,
     isActive: true,
+    prepInstructions: 'Marinate breast 2 hrs in herb oil; portion 220g raw per tray; steam jasmine rice in 4kg hotel pans.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_1', menuItemId: 'mnu_grill_chicken_bowl', ingredientId: 'ing_chicken', ingredientName: 'Free-Range Chicken Breast', quantity: 0.22, unit: 'kg' },
@@ -70,6 +93,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 28.00,
     targetCost: 8.50,
     isActive: true,
+    prepInstructions: 'Trim and portion 280g center-cut sirloin steaks; whip herb compound butter; julienne yellow onions for sear.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_5', menuItemId: 'mnu_grill_steak_frites', ingredientId: 'ing_beef_sirloin', ingredientName: 'Prime Sirloin Steak', quantity: 0.28, unit: 'kg' },
@@ -86,6 +110,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 26.50,
     targetCost: 7.90,
     isActive: true,
+    prepInstructions: 'Pin-bone and portion 200g skin-on fillets on parchment-lined sheet pans; stem and wash lacinato kale.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_8', menuItemId: 'mnu_grill_salmon', ingredientId: 'ing_salmon', ingredientName: 'Atlantic Salmon Fillet', quantity: 0.20, unit: 'kg' },
@@ -102,6 +127,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 17.50,
     targetCost: 4.20,
     isActive: true,
+    prepInstructions: 'Par-boil penne 70% al dente and ice-shock into 150g portion bags; slice cremini mushrooms; grate parmesan.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_11', menuItemId: 'mnu_saute_creamy_pasta', ingredientId: 'ing_penne_pasta', ingredientName: 'Artisan Penne Pasta', quantity: 0.15, unit: 'kg' },
@@ -119,6 +145,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 19.00,
     targetCost: 4.60,
     isActive: true,
+    prepInstructions: 'Par-cook risotto base on sheet pans to 60% doneness; roast mushroom mix ahead for rapid line pickup.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_15', menuItemId: 'mnu_saute_mushroom_risotto', ingredientId: 'ing_jasmine_rice', ingredientName: 'Jasmine Rice', quantity: 0.14, unit: 'kg' },
@@ -136,6 +163,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 15.00,
     targetCost: 3.10,
     isActive: true,
+    prepInstructions: 'Press and cube tofu into 200g dry containers; slice onions and strip kale ribs.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_19', menuItemId: 'mnu_saute_tofu_stirfry', ingredientId: 'ing_tofu', ingredientName: 'Organic Firm Tofu', quantity: 0.20, unit: 'kg' },
@@ -153,6 +181,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 13.50,
     targetCost: 2.90,
     isActive: true,
+    prepInstructions: 'Wash, spin-dry, and chop romaine hearts; emulsify egg-parmesan Caesar dressing in 2L cambros.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_23', menuItemId: 'mnu_salad_caesar', ingredientId: 'ing_romaine', ingredientName: 'Crisp Romaine Lettuce', quantity: 0.16, unit: 'kg' },
@@ -170,6 +199,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 14.50,
     targetCost: 3.40,
     isActive: true,
+    prepInstructions: 'Massage chiffonade kale with olive oil; halve cherry tomatoes; stage ripe avocados uncut until order.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_27', menuItemId: 'mnu_salad_kale_avocado', ingredientId: 'ing_kale', ingredientName: 'Tuscan Lacinato Kale', quantity: 0.14, unit: 'kg' },
@@ -187,6 +217,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 15.00,
     targetCost: 4.10,
     isActive: true,
+    prepInstructions: 'Hold heirloom tomatoes at cellar temp (not walk-in) for flavor; portion cream-filled burrata trays.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_31', menuItemId: 'mnu_salad_caprese', ingredientId: 'ing_cherry_tomatoes', ingredientName: 'Heirloom Cherry Tomatoes', quantity: 0.18, unit: 'kg' },
@@ -203,6 +234,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 8.50,
     targetCost: 1.40,
     isActive: true,
+    prepInstructions: 'Autolyse flour and active levain; bulk ferment 4 hrs with coil folds; bake at 245°C with steam.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_34', menuItemId: 'mnu_bakery_sourdough_loaf', ingredientId: 'ing_flour', ingredientName: 'Bread Flour Unbleached', quantity: 0.45, unit: 'kg' },
@@ -218,6 +250,7 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 7.00,
     targetCost: 1.80,
     isActive: true,
+    prepInstructions: 'Mix enriched dough with softened butter and eggs; proof 90 min in 4-pack rings; egg-wash before baking.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_36', menuItemId: 'mnu_bakery_brioche_buns', ingredientId: 'ing_flour', ingredientName: 'Bread Flour Unbleached', quantity: 0.35, unit: 'kg' },
@@ -235,11 +268,60 @@ export const BENCHMARK_MENU_ITEMS: MenuItem[] = [
     sellingPrice: 9.00,
     targetCost: 1.60,
     isActive: true,
+    prepInstructions: 'High-hydration dough dimpled with EVOO on oiled half-sheet pans; bake until golden crust.',
     isDemonstrationData: true,
     ingredients: [
       { id: 'bom_40', menuItemId: 'mnu_bakery_focaccia', ingredientId: 'ing_flour', ingredientName: 'Bread Flour Unbleached', quantity: 0.40, unit: 'kg' },
       { id: 'bom_41', menuItemId: 'mnu_bakery_focaccia', ingredientId: 'ing_olive_oil', ingredientName: 'Extra Virgin Olive Oil', quantity: 0.06, unit: 'L' }
     ]
+  }
+];
+
+export const INITIAL_WASTE_RECORDS: WasteRecord[] = [
+  {
+    id: 'wst_1',
+    restaurantId: 'rst_rustic_table',
+    date: '2026-11-11',
+    itemId: 'mnu_grill_salmon',
+    itemType: 'menu_item',
+    name: 'Wood-Fired Atlantic Salmon',
+    quantity: 3,
+    unit: 'portions',
+    unitCost: 7.90,
+    totalLossCost: 23.70,
+    reason: 'Overproduction',
+    loggedBy: 'Chef Marco',
+    station: 'Grill'
+  },
+  {
+    id: 'wst_2',
+    restaurantId: 'rst_rustic_table',
+    date: '2026-11-11',
+    itemId: 'mnu_bakery_sourdough_loaf',
+    itemType: 'menu_item',
+    name: 'Country Sourdough Batard',
+    quantity: 4,
+    unit: 'portions',
+    unitCost: 1.40,
+    totalLossCost: 5.60,
+    reason: 'Expired',
+    loggedBy: 'Leo (Station Cook)',
+    station: 'Bakery'
+  },
+  {
+    id: 'wst_3',
+    restaurantId: 'rst_rustic_table',
+    date: '2026-11-10',
+    itemId: 'mnu_salad_caesar',
+    itemType: 'menu_item',
+    name: 'Artisan Caesar Salad',
+    quantity: 3,
+    unit: 'portions',
+    unitCost: 2.90,
+    totalLossCost: 8.70,
+    reason: 'Overproduction',
+    loggedBy: 'Chef Marco',
+    station: 'Garde Manger'
   }
 ];
 
@@ -260,12 +342,12 @@ export function generateBenchmarkSalesHistory(): SaleRecord[] {
     mnu_bakery_focaccia: { weekday: 18, weekend: 28, rainMod: 1.05 }
   };
 
-  const today = new Date('2026-11-12T00:00:00Z');
+  const today = new Date('2026-11-13');
   for (let i = 30; i >= 1; i--) {
     const d = new Date(today);
-    d.setUTCDate(d.getUTCDate() - i);
+    d.setDate(d.getDate() - i);
     const dateStr = d.toISOString().split('T')[0];
-    const dayOfWeek = d.getUTCDay();
+    const dayOfWeek = d.getDay();
     const isWeekend = dayOfWeek === 5 || dayOfWeek === 6 || dayOfWeek === 0;
 
     const isRainyDay = (i % 7 === 2) || (i === 11);
@@ -280,7 +362,7 @@ export function generateBenchmarkSalesHistory(): SaleRecord[] {
       const base = isWeekend ? config.weekend : config.weekday;
       const weatherMult = isRainyDay ? config.rainMod : 1.0;
       const eventMult = hasEvent ? 1.18 : 1.0;
-      
+
       const deterministicNoise = (((i * 17 + dish.id.length * 13) % 9) - 4) * 0.03;
       const finalQuantity = Math.max(4, Math.round(base * weatherMult * eventMult * (1 + deterministicNoise)));
       const revenue = Math.round(finalQuantity * dish.sellingPrice * 100) / 100;

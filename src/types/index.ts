@@ -1,8 +1,10 @@
 export type Station = 'Grill' | 'Saute' | 'Garde Manger' | 'Bakery';
 
+export type MeasurementUnit = 'kg' | 'g' | 'L' | 'ml' | 'pcs';
+
 export type WasteReason = 'Overproduction' | 'Expired' | 'Prep Mistake' | 'Quality Defect';
 
-export type UnitType = 'kg' | 'g' | 'L' | 'ml' | 'pcs';
+export type StockMovementType = 'addition' | 'reduction' | 'adjustment' | 'sale_deduction';
 
 export type AppRoute =
   | 'dashboard'
@@ -15,33 +17,6 @@ export type AppRoute =
   | 'waste'
   | 'settings';
 
-export interface ForecastConfig {
-  lookbackWeeks: number;
-  weekdayWeights: number[];
-  maxDecreasePct: number;
-  maxIncreasePct: number;
-  stationBuffers: Record<Station, number>;
-  closedWeekdays: number[];
-  closedDates: string[];
-  defaultColdStartBaseline: number;
-}
-
-export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
-  lookbackWeeks: 4,
-  weekdayWeights: [0.40, 0.30, 0.20, 0.10],
-  maxDecreasePct: 30,
-  maxIncreasePct: 35,
-  stationBuffers: {
-    Grill: 8,
-    Saute: 10,
-    'Garde Manger': 5,
-    Bakery: 5
-  },
-  closedWeekdays: [],
-  closedDates: [],
-  defaultColdStartBaseline: 15
-};
-
 export interface Restaurant {
   id: string;
   name: string;
@@ -50,7 +25,6 @@ export interface Restaurant {
   stations: Station[];
   isDemo: boolean;
   version: string;
-  updatedAt?: number;
 }
 
 export interface Ingredient {
@@ -58,11 +32,13 @@ export interface Ingredient {
   restaurantId: string;
   name: string;
   category: 'Protein' | 'Produce' | 'Dairy' | 'Dry Goods' | 'Bakery' | 'Pantry';
-  unit: UnitType;
+  unit: MeasurementUnit;
   unitCost: number;
   currentStock: number;
   safetyStock: number;
   shelfLifeDays: number;
+  expirationDate?: string;
+  isAvailable?: boolean;
   isDemonstrationData?: boolean;
 }
 
@@ -72,7 +48,7 @@ export interface RecipeBOMItem {
   ingredientId: string;
   ingredientName: string;
   quantity: number;
-  unit: UnitType;
+  unit: MeasurementUnit;
 }
 
 export interface MenuItem {
@@ -84,6 +60,7 @@ export interface MenuItem {
   sellingPrice: number;
   targetCost: number;
   isActive: boolean;
+  prepInstructions?: string;
   isDemonstrationData?: boolean;
   ingredients: RecipeBOMItem[];
 }
@@ -105,17 +82,25 @@ export interface SaleRecord {
   isDemonstrationData: boolean;
 }
 
-export interface InventoryRecord {
+export interface ClosedDayRecord {
+  id: string;
+  restaurantId: string;
+  date: string;
+  reason: string;
+}
+
+export interface StockMovementRecord {
   id: string;
   restaurantId: string;
   ingredientId: string;
   ingredientName: string;
-  type: 'intake' | 'count_adjustment' | 'sale_deduction' | 'waste';
+  type: StockMovementType;
   delta: number;
   previousStock: number;
   newStock: number;
-  unit: UnitType;
-  note?: string;
+  unit: MeasurementUnit;
+  reason: string;
+  date: string;
   timestamp: string;
 }
 
@@ -135,52 +120,14 @@ export interface WasteRecord {
   station?: Station;
 }
 
-export interface RequiredIngredientRequirement {
-  ingredientId: string;
-  name: string;
-  grossRequired: number;
-  currentStock: number;
-  netRequired: number;
-  unit: string;
-}
-
-export interface ItemPrediction {
-  menuItemId: string;
-  dishName: string;
-  station: Station;
-  baseCalculated: number;
-  aiAdjusted: number;
-  recommendedPrep: number;
-  managerOverride: number | null;
-  safetyBufferPct: number;
-  confidenceScore: number;
-  rationale: string;
-  riskOfWaste: 'Low' | 'Medium' | 'High';
-  requiredIngredients: RequiredIngredientRequirement[];
-}
-
-export interface PredictionRecord {
+export interface AppSettings {
   id: string;
   restaurantId: string;
-  targetDate: string;
-  weatherForecast: {
-    condition: string;
-    temperatureC: number;
-    precipitationProbability: number;
-  };
-  eventContext: string;
-  generalAssessment?: string;
-  modelVersion?: string;
-  itemPredictions: ItemPrediction[];
-  isOfflineFallback: boolean;
-  createdAt: number;
-}
-
-export interface PrepSheetRecord {
-  id: string;
-  restaurantId: string;
-  businessDate: string;
-  overrides: Record<string, number>;
+  restaurantName: string;
+  concept: string;
+  currency: string;
+  aiAdjustmentLimitPct: number;
+  stationBuffers: Record<Station, number>;
   updatedAt: number;
 }
 
@@ -190,23 +137,97 @@ export interface PrepChecklistItem {
   businessDate: string;
   station: Station;
   taskId: string;
-  dishName?: string;
-  completed: boolean;
+  isCompleted: boolean;
   completedAt?: string;
+  completedBy?: string;
+  isDemonstrationData: boolean;
 }
 
-export interface ContextualDishAdjustment {
+export interface GeminiDishAdjustment {
   dishId: string;
   suggestedMultiplier: number;
-  clampedMultiplier: number;
   rationale: string;
   riskOfWaste: 'Low' | 'Medium' | 'High';
 }
 
-export interface ContextualForecastResponse {
+export interface ContextualAnalysisResult {
+  cacheKey: string;
+  targetDate: string;
   modelVersion: string;
+  adjustmentLimitPct: number;
   generalAssessment: string;
-  adjustments: ContextualDishAdjustment[];
-  isOfflineFallback: boolean;
+  adjustments: GeminiDishAdjustment[];
+  isFallback: boolean;
   fallbackReason?: string;
+  generatedAt: string;
+}
+
+export interface DishIngredientBreakdown {
+  ingredientId: string;
+  ingredientName: string;
+  portionQuantity: number;
+  portionUnit: MeasurementUnit;
+  convertedPerPortion: number;
+  stockUnit: MeasurementUnit;
+  grossForDish: number;
+  currentStock: number;
+  unitCompatible: boolean;
+  compatibilityWarning?: string;
+}
+
+export interface DishPreparationRecommendation {
+  menuItemId: string;
+  dishName: string;
+  station: Station;
+  category: string;
+  predictedPortions: number;
+  recommendedPrep: number;
+  effectivePrep: number;
+  isOverridden: boolean;
+  safetyBufferPct: number;
+  confidenceInterval80: [number, number];
+  dataStatus: 'optimal' | 'moderate' | 'insufficient' | 'closed';
+  riskOfWaste: 'Low' | 'Medium' | 'High';
+  prepInstructions?: string;
+  missingRecipeWarning?: string;
+  reasoning: string;
+  ingredients: DishIngredientBreakdown[];
+  hasShortage: boolean;
+  hasUnitWarning: boolean;
+}
+
+export interface IngredientProcurementSummary {
+  ingredientId: string;
+  ingredientName: string;
+  category: string;
+  stockUnit: MeasurementUnit;
+  grossRequired: number;
+  availableStock: number;
+  safetyStock: number;
+  netRequired: number;
+  surplusAfterPrep: number;
+  isShortage: boolean;
+  isLowStock: boolean;
+  isExpiringSoon: boolean;
+  isExpired: boolean;
+  shelfLifeDays: number;
+  expirationDate?: string;
+  sharedAcrossDishes: string[];
+  hasUnitWarning: boolean;
+  unitWarningMessage?: string;
+  procurementAction: 'Sufficient — Do Not Order' | 'Shortage — Procure / Prep Net Qty' | 'Expiring Soon — Prioritize Use' | 'Unit Mismatch — Verify Recipe';
+}
+
+export interface PrepSheetRecommendationBundle {
+  prepSheetId: string;
+  businessDate: string;
+  shift: 'All Day' | 'Lunch' | 'Dinner';
+  isClosedDay: boolean;
+  itemRecommendations: DishPreparationRecommendation[];
+  ingredientSummaries: IngredientProcurementSummary[];
+  totalPredictedPortions: number;
+  totalRecommendedPrep: number;
+  totalShortagesCount: number;
+  missingRecipesCount: number;
+  expiringSoonCount: number;
 }

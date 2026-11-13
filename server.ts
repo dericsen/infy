@@ -1,277 +1,276 @@
-import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express from 'express';
+import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
-import { z } from 'zod';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const ContextualizeRequestSchema = z.object({
-  targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  dayOfWeek: z.string().min(1).max(20),
-  weatherForecast: z.object({
-    condition: z.string().min(1).max(60),
-    temperatureC: z.number().min(-40).max(55),
-    precipitationProbability: z.number().min(0).max(100)
-  }),
-  eventContext: z.string().max(240),
-  bounds: z
-    .object({
-      maxDecreasePct: z.number().min(0).max(60).default(30),
-      maxIncreasePct: z.number().min(0).max(60).default(35)
-    })
-    .optional(),
-  dishes: z
-    .array(
-      z.object({
-        id: z.string().min(1),
-        name: z.string().min(1),
-        station: z.enum(['Grill', 'Saute', 'Garde Manger', 'Bakery']),
-        category: z.string().min(1),
-        baseSales: z.number().min(0),
-        recentAverage: z.number().min(0)
-      })
-    )
-    .min(1)
-    .max(100)
-});
+const PORT = 3000;
+const GEMINI_TIMEOUT_MS = 12000;
 
-export const GeminiAdjustmentOutputSchema = z.object({
-  generalAssessment: z.string().min(1),
-  adjustments: z.array(
-    z.object({
-      dishId: z.string().min(1),
-      suggestedMultiplier: z.number().finite(),
-      rationale: z.string().min(1),
-      riskOfWaste: z.enum(['Low', 'Medium', 'High'])
-    })
-  )
-});
+interface DishInput {
+  id: string;
+  name: string;
+  station: string;
+  category: string;
+  baseSales: number;
+}
 
-export type ContextualizeRequestPayload = z.infer<typeof ContextualizeRequestSchema>;
-
-export interface GeminiClientLike {
-  models: {
-    generateContent: (params: Record<string, unknown>) => Promise<{ text?: string }>;
+interface ContextualizeBody {
+  targetDate: string;
+  dayOfWeek: string;
+  weatherForecast: {
+    condition: string;
+    temperatureC: number;
+    precipitationProbability: number;
   };
+  eventContext: string;
+  adjustmentLimitPct?: number;
+  dishes: DishInput[];
 }
 
-export function clampMultiplier(
-  rawValue: number,
-  maxDecreasePct: number,
-  maxIncreasePct: number
-): number {
-  if (!Number.isFinite(rawValue)) return 0;
-  const minVal = -1 * (maxDecreasePct / 100);
-  const maxVal = maxIncreasePct / 100;
-  const clamped = Math.max(minVal, Math.min(maxVal, rawValue));
-  return Math.round(clamped * 1000) / 1000;
-}
-
-export function createGeminiClient(apiKey: string): GeminiClientLike {
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build'
-      }
-    }
-  });
-}
-
-export async function runContextualForecastWithGemini(
-  payload: ContextualizeRequestPayload,
-  aiClient: GeminiClientLike,
-  timeoutMs: number = 12000
-) {
-  const maxDecreasePct = payload.bounds?.maxDecreasePct ?? 30;
-  const maxIncreasePct = payload.bounds?.maxIncreasePct ?? 35;
-
-  const minMult = -(maxDecreasePct / 100);
-  const maxMult = maxIncreasePct / 100;
-
-  const prompt = [
-    `Analyze next-day restaurant demand context for The Rustic Table on ${payload.targetDate} (${payload.dayOfWeek}).`,
-    `Weather: ${payload.weatherForecast.condition}, ${payload.weatherForecast.temperatureC}C, precipitation chance ${payload.weatherForecast.precipitationProbability}%.`,
-    `Local events & calendar context: ${payload.eventContext || 'Regular Service'}.`,
-    `Allowed multiplier bounds: [${minMult.toFixed(2)}, +${maxMult.toFixed(2)}].`,
-    `Do NOT invent sales unit totals. Return only bounded percentage modifiers relative to the provided 4-week statistical base.`,
-    `Dishes: ${JSON.stringify(payload.dishes)}`
-  ].join('\n');
-
-  const modelName = 'gemini-4-hydrogen';
-
-  const geminiPromise = aiClient.models.generateContent({
-    model: modelName,
-    contents: prompt,
-    config: {
-      systemInstruction:
-        'You are a culinary operations analyst advising on restaurant prep par adjustments. Return strict JSON matching the schema. Never invent raw sales figures; output only bounded relative multipliers and concise kitchen rationales.',
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          generalAssessment: {
-            type: Type.STRING,
-            description: 'One concise paragraph summarizing expected weather and event impacts across stations.'
-          },
-          adjustments: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                dishId: { type: Type.STRING },
-                suggestedMultiplier: {
-                  type: Type.NUMBER,
-                  description: `Decimal modifier between ${minMult.toFixed(2)} and ${maxMult.toFixed(2)}, e.g. 0.15 for +15% or -0.12 for -12%.`
-                },
-                rationale: { type: Type.STRING },
-                riskOfWaste: {
-                  type: Type.STRING,
-                  enum: ['Low', 'Medium', 'High']
-                }
-              },
-              required: ['dishId', 'suggestedMultiplier', 'rationale', 'riskOfWaste']
-            }
-          }
-        },
-        required: ['generalAssessment', 'adjustments']
-      }
-    }
-  });
-
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Gemini contextual forecast request timed out')), timeoutMs);
-  });
-
-  const response = await Promise.race([geminiPromise, timeoutPromise]);
-  const rawText = (response.text ?? '').trim();
-  if (!rawText) {
-    throw new Error('Gemini returned an empty response payload');
+function validateContextualizeBody(body: unknown): { valid: true; data: ContextualizeBody } | { valid: false; error: string } {
+  if (!body || typeof body !== 'object') {
+    return { valid: false, error: 'Request body must be a JSON object.' };
   }
 
-  let parsedJson: unknown;
-  try {
-    parsedJson = JSON.parse(rawText);
-  } catch {
-    throw new Error('Gemini returned malformed JSON output');
+  const b = body as Record<string, unknown>;
+  if (typeof b.targetDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(b.targetDate)) {
+    return { valid: false, error: 'targetDate must be a valid YYYY-MM-DD string.' };
   }
 
-  const validated = GeminiAdjustmentOutputSchema.safeParse(parsedJson);
-  if (!validated.success) {
-    throw new Error('Gemini JSON response failed schema validation');
+  if (typeof b.dayOfWeek !== 'string' || b.dayOfWeek.trim().length === 0) {
+    return { valid: false, error: 'dayOfWeek is required.' };
   }
 
-  const byId = new Map(validated.data.adjustments.map(a => [a.dishId, a]));
+  if (!b.weatherForecast || typeof b.weatherForecast !== 'object') {
+    return { valid: false, error: 'weatherForecast object is required.' };
+  }
 
-  const normalizedAdjustments = payload.dishes.map(dish => {
-    const item = byId.get(dish.id);
-    if (!item) {
-      return {
-        dishId: dish.id,
-        suggestedMultiplier: 0,
-        clampedMultiplier: 0,
-        rationale: 'No contextual shift suggested for this item.',
-        riskOfWaste: 'Low' as const
-      };
+  const wf = b.weatherForecast as Record<string, unknown>;
+  if (typeof wf.condition !== 'string' || typeof wf.temperatureC !== 'number' || typeof wf.precipitationProbability !== 'number') {
+    return { valid: false, error: 'weatherForecast must include condition, temperatureC, and precipitationProbability.' };
+  }
+
+  if (!Array.isArray(b.dishes) || b.dishes.length === 0 || b.dishes.length > 100) {
+    return { valid: false, error: 'dishes must be a non-empty array of at most 100 menu items.' };
+  }
+
+  for (const d of b.dishes) {
+    if (!d || typeof d !== 'object') {
+      return { valid: false, error: 'Each dish must be an object.' };
     }
+    const item = d as Record<string, unknown>;
+    if (typeof item.id !== 'string' || typeof item.name !== 'string' || typeof item.station !== 'string' || typeof item.baseSales !== 'number' || item.baseSales < 0) {
+      return { valid: false, error: 'Each dish requires valid id, name, station, and non-negative baseSales.' };
+    }
+  }
 
-    const clamped = clampMultiplier(item.suggestedMultiplier, maxDecreasePct, maxIncreasePct);
-    return {
-      dishId: dish.id,
-      suggestedMultiplier: item.suggestedMultiplier,
-      clampedMultiplier: clamped,
-      rationale: item.rationale,
-      riskOfWaste: item.riskOfWaste
-    };
-  });
+  const rawLimit = typeof b.adjustmentLimitPct === 'number' ? b.adjustmentLimitPct : 15;
+  const clampedLimit = Math.max(5, Math.min(35, rawLimit));
 
   return {
-    modelVersion: modelName,
-    generalAssessment: validated.data.generalAssessment,
-    adjustments: normalizedAdjustments,
-    isOfflineFallback: false
+    valid: true,
+    data: {
+      targetDate: b.targetDate,
+      dayOfWeek: b.dayOfWeek,
+      weatherForecast: {
+        condition: wf.condition,
+        temperatureC: wf.temperatureC,
+        precipitationProbability: wf.precipitationProbability
+      },
+      eventContext: typeof b.eventContext === 'string' ? b.eventContext.slice(0, 200) : 'Regular Service',
+      adjustmentLimitPct: clampedLimit,
+      dishes: b.dishes as DishInput[]
+    }
   };
 }
 
-export function createApiApp(clientOverride?: GeminiClientLike | null) {
+async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '512kb' }));
 
-  app.get('/api/health', (_req: Request, res: Response) => {
+  app.get('/api/health', (_req, res) => {
     res.json({
       status: 'ok',
-      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'),
       timestamp: new Date().toISOString()
     });
   });
 
-  app.post('/api/forecast/contextualize', async (req: Request, res: Response) => {
-    const parsed = ContextualizeRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({
-        error: 'Invalid forecast contextualization request payload',
-        details: parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`)
-      });
+  app.post('/api/forecast/contextualize', async (req, res) => {
+    const validation = validateContextualizeBody(req.body);
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.error, fallbackRequired: true });
       return;
     }
 
+    const payload = validation.data;
+    const limitRatio = (payload.adjustmentLimitPct || 15) / 100;
     const apiKey = process.env.GEMINI_API_KEY;
-    const activeClient = clientOverride !== undefined
-      ? clientOverride
-      : apiKey
-      ? createGeminiClient(apiKey)
-      : null;
 
-    if (!activeClient) {
+    if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
       res.status(503).json({
-        error: 'GEMINI_API_KEY is not configured on the server; client should use deterministic fallback.',
+        error: 'GEMINI_API_KEY is not configured on the server.',
         fallbackRequired: true
       });
       return;
     }
 
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build'
+        }
+      }
+    });
+
+    const prompt = JSON.stringify({
+      targetDate: payload.targetDate,
+      dayOfWeek: payload.dayOfWeek,
+      weatherForecast: payload.weatherForecast,
+      eventContext: payload.eventContext,
+      adjustmentBounds: {
+        minMultiplier: -limitRatio,
+        maxMultiplier: limitRatio
+      },
+      dishes: payload.dishes.map(d => ({
+        id: d.id,
+        name: d.name,
+        station: d.station,
+        category: d.category,
+        statisticalBaseSales: d.baseSales
+      }))
+    });
+
+    const systemInstruction = [
+      'You are an operations analyst assisting a single-location restaurant kitchen.',
+      'Analyze ONLY the provided JSON context: targetDate, dayOfWeek, weatherForecast, eventContext, and dishes.',
+      'Do NOT invent events, holidays, weather conditions, or historical sales numbers not present in the input.',
+      `For each dish, recommend a bounded demand multiplier between -${limitRatio.toFixed(2)} and +${limitRatio.toFixed(2)} (representing percentage change from statisticalBaseSales).`,
+      'Provide a concise, plain-English operational rationale per dish explaining how the provided weather, temperature, day of week, or event affects customer ordering.',
+      'Assign riskOfWaste as Low, Medium, or High considering perishability and demand uncertainty.'
+    ].join(' ');
+
     try {
-      const result = await runContextualForecastWithGemini(parsed.data, activeClient);
-      res.json(result);
+      const timeoutPromise = new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('Gemini contextualization request timed out.')), GEMINI_TIMEOUT_MS);
+      });
+
+      const generatePromise = ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: prompt,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              generalAssessment: {
+                type: Type.STRING,
+                description: 'Concise 1-2 sentence kitchen briefing summarizing the provided contextual factors.'
+              },
+              adjustments: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    dishId: { type: Type.STRING },
+                    suggestedMultiplier: { type: Type.NUMBER },
+                    rationale: { type: Type.STRING },
+                    riskOfWaste: { type: Type.STRING }
+                  },
+                  required: ['dishId', 'suggestedMultiplier', 'rationale', 'riskOfWaste']
+                }
+              }
+            },
+            required: ['generalAssessment', 'adjustments']
+          }
+        }
+      });
+
+      const response = await Promise.race([generatePromise, timeoutPromise]);
+      const rawText = (response.text ?? '').trim();
+      if (!rawText) {
+        res.status(502).json({ error: 'Empty response from Gemini model.', fallbackRequired: true });
+        return;
+      }
+
+      const parsed = JSON.parse(rawText) as {
+        generalAssessment?: unknown;
+        adjustments?: unknown[];
+      };
+
+      if (typeof parsed.generalAssessment !== 'string' || !Array.isArray(parsed.adjustments)) {
+        res.status(502).json({ error: 'Invalid structured response schema from Gemini.', fallbackRequired: true });
+        return;
+      }
+
+      const validDishIds = new Set(payload.dishes.map(d => d.id));
+      const boundedAdjustments = parsed.adjustments
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+        .filter(item => typeof item.dishId === 'string' && validDishIds.has(item.dishId))
+        .map(item => {
+          const rawMult = typeof item.suggestedMultiplier === 'number' && Number.isFinite(item.suggestedMultiplier)
+            ? item.suggestedMultiplier
+            : 0;
+          const clampedMult = Math.round(Math.max(-limitRatio, Math.min(limitRatio, rawMult)) * 1000) / 1000;
+          const risk = item.riskOfWaste === 'High' || item.riskOfWaste === 'Medium' || item.riskOfWaste === 'Low'
+            ? item.riskOfWaste
+            : 'Medium';
+          const rationale = typeof item.rationale === 'string' && item.rationale.trim().length > 0
+            ? item.rationale.trim().slice(0, 280)
+            : 'Contextual adjustment bounded within safety limits.';
+
+          return {
+            dishId: item.dishId as string,
+            suggestedMultiplier: clampedMult,
+            rationale,
+            riskOfWaste: risk as 'Low' | 'Medium' | 'High'
+          };
+        });
+
+      res.json({
+        modelVersion: 'gemini-4-hydrogen',
+        adjustmentLimitPct: payload.adjustmentLimitPct,
+        generalAssessment: parsed.generalAssessment.slice(0, 500),
+        adjustments: boundedAdjustments,
+        isFallback: false,
+        generatedAt: new Date().toISOString()
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Upstream Gemini failure';
-      res.status(502).json({
+      const message = err instanceof Error ? err.message : 'Unexpected server error during contextualization.';
+      const status = message.includes('timed out') ? 504 : 502;
+      res.status(status).json({
         error: message,
         fallbackRequired: true
       });
     }
   });
 
-  return app;
-}
-
-async function startServer() {
-  const app = createApiApp();
-  const port = Number(process.env.PORT) || 3000;
-
-  if (process.env.NODE_ENV === 'production') {
-    const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
-    });
-  } else {
+  if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
     });
     app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`WasteLess server listening on http://0.0.0.0:${port}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`WasteLess server listening on port ${PORT}`);
   });
 }
 
-if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-  startServer();
-}
+startServer();
