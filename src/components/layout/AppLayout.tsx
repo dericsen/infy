@@ -3,7 +3,6 @@ import { AppRoute, Station } from '../../types';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { DemoBanner } from '../common/DemoBanner';
-
 import { UserSession } from '../../services/authService';
 
 interface AppLayoutProps {
@@ -21,6 +20,9 @@ interface AppLayoutProps {
   onLogout: () => void;
   onResetBenchmark: () => void;
   onQuickWasteLog: () => void;
+  restaurantName?: string;
+  restaurantConcept?: string;
+  hasDemoRecords?: boolean;
   children: React.ReactNode;
 }
 
@@ -39,13 +41,16 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   onLogout,
   onResetBenchmark,
   onQuickWasteLog,
+  restaurantName,
+  restaurantConcept,
+  hasDemoRecords,
   children
 }) => {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans antialiased text-slate-800">
-      <DemoBanner onResetBenchmark={onResetBenchmark} />
+      <DemoBanner onResetBenchmark={onResetBenchmark} hasDemoRecords={hasDemoRecords} />
 
       <div className="flex-1 flex">
         <Sidebar
@@ -53,6 +58,8 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           onRouteChange={onRouteChange}
           selectedStationFilter={selectedStationFilter}
           onStationFilterChange={onStationFilterChange}
+          restaurantName={restaurantName}
+          restaurantConcept={restaurantConcept}
           isOpenMobile={isMobileSidebarOpen}
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
         />

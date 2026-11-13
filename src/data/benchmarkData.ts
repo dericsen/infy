@@ -260,12 +260,12 @@ export function generateBenchmarkSalesHistory(): SaleRecord[] {
     mnu_bakery_focaccia: { weekday: 18, weekend: 28, rainMod: 1.05 }
   };
 
-  const today = new Date('2026-11-12');
+  const today = new Date('2026-11-12T00:00:00Z');
   for (let i = 30; i >= 1; i--) {
     const d = new Date(today);
-    d.setDate(d.getDate() - i);
+    d.setUTCDate(d.getUTCDate() - i);
     const dateStr = d.toISOString().split('T')[0];
-    const dayOfWeek = d.getDay();
+    const dayOfWeek = d.getUTCDay();
     const isWeekend = dayOfWeek === 5 || dayOfWeek === 6 || dayOfWeek === 0;
 
     const isRainyDay = (i % 7 === 2) || (i === 11);

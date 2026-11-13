@@ -1,97 +1,228 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Sparkles,
-  CloudRain,
-  Sun,
-  Calendar,
   ShieldCheck,
-  TrendingUp,
-  Info,
   CheckCircle2,
   RefreshCw,
-  BarChart3,
-  Scale,
-  Activity,
-  Layers
+  AlertTriangle,
+  WifiOff
 } from 'lucide-react';
-import { Station, MenuItem, SaleRecord } from '../../types';
+import {
+  ContextualDishAdjustment,
+  ForecastConfig,
+  Ingredient,
+  MenuItem,
+  PredictionRecord,
+  SaleRecord
+} from '../../types';
+import {
+  DishForecastResult,
+  ModelAccuracyEvaluation,
+  evaluateBacktestMetrics,
+  generateComprehensiveForecast
+} from '../../engine/forecastingEngine';
+import { decomposePrepSheet } from '../../engine/prepEngine';
+import { requestContextualForecast } from '../../services/contextualForecastService';
 import { Card } from '../common/Card';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
-import {
-  generateComprehensiveForecast,
-  evaluateBacktestMetrics,
-  DishForecastResult,
-  ModelAccuracyEvaluation
-} from '../../engine/forecastingEngine';
 
 interface PredictionViewProps {
   businessDate: string;
   menuItems: MenuItem[];
+  ingredients: Ingredient[];
   salesRecords: SaleRecord[];
+  forecastConfig: ForecastConfig;
+  existingPrediction: PredictionRecord | null;
+  onSavePrediction: (prediction: PredictionRecord) => void;
   onApplyForecastToPrep: (adjustments: Record<string, number>) => void;
 }
 
 export const PredictionView: React.FC<PredictionViewProps> = ({
   businessDate,
   menuItems,
+  ingredients,
   salesRecords,
+  forecastConfig,
+  existingPrediction,
+  onSavePrediction,
   onApplyForecastToPrep
 }) => {
   const [activeTab, setActiveTab] = useState<'forecast' | 'evaluation'>('forecast');
-  const [weatherCondition, setWeatherCondition] = useState<'Clear' | 'Rain' | 'Cloudy' | 'Storm'>('Rain');
-  const [temperatureC, setTemperatureC] = useState<number>(13);
-  const [rainChance, setRainChance] = useState<number>(75);
-  const [eventTag, setEventTag] = useState<string>('Payday Friday + Theater Event');
-  const [isSimulating, setIsSimulating] = useState<boolean>(false);
+  const [weatherCondition, setWeatherCondition] = useState<'Clear' | 'Rain' | 'Cloudy' | 'Storm'>(
+    (existingPrediction?.weatherForecast.condition as 'Clear' | 'Rain' | 'Cloudy' | 'Storm') || 'Rain'
+  );
+  const [temperatureC, setTemperatureC] = useState<number>(
+    existingPrediction?.weatherForecast.temperatureC ?? 13
+  );
+  const [rainChance, setRainChance] = useState<number>(
+    existingPrediction?.weatherForecast.precipitationProbability ?? 75
+  );
+  const [eventTag, setEventTag] = useState<string>(
+    existingPrediction?.eventContext || 'Payday Friday + Theater Event'
+  );
+
+  const [isRunningAi, setIsRunningAi] = useState<boolean>(false);
+  const [aiAssessment, setAiAssessment] = useState<string | null>(
+    existingPrediction?.generalAssessment || null
+  );
+  const [aiModelVersion, setAiModelVersion] = useState<string>(
+    existingPrediction?.modelVersion || 'local-heuristic-fallback'
+  );
+  const [isOfflineFallback, setIsOfflineFallback] = useState<boolean>(
+    existingPrediction?.isOfflineFallback ?? true
+  );
+  const [fallbackNotice, setFallbackNotice] = useState<string | null>(null);
+  const [aiAdjustmentsByDish, setAiAdjustmentsByDish] = useState<Record<string, ContextualDishAdjustment>>({});
   const [appliedToast, setAppliedToast] = useState<boolean>(false);
 
+  const activeMenu = useMemo(
+    () => menuItems.filter(m => m.isActive !== false),
+    [menuItems]
+  );
+
   const forecastResults: DishForecastResult[] = useMemo(() => {
-    return menuItems.map(dish =>
+    return activeMenu.map(dish =>
       generateComprehensiveForecast(
         dish,
         salesRecords,
         businessDate,
         { condition: weatherCondition, temperatureC, precipChance: rainChance },
-        eventTag
+        eventTag,
+        forecastConfig,
+        aiAdjustmentsByDish[dish.id] || null
       )
     );
-  }, [menuItems, salesRecords, businessDate, weatherCondition, temperatureC, rainChance, eventTag]);
+  }, [activeMenu, salesRecords, businessDate, weatherCondition, temperatureC, rainChance, eventTag, forecastConfig, aiAdjustmentsByDish]);
 
   const evaluationResults: ModelAccuracyEvaluation[] = useMemo(() => {
-    return menuItems.map(dish =>
-      evaluateBacktestMetrics(salesRecords, dish.id, dish.name, 14)
+    return activeMenu.map(dish =>
+      evaluateBacktestMetrics(salesRecords, dish.id, dish.name, 14, forecastConfig)
     );
-  }, [menuItems, salesRecords]);
+  }, [activeMenu, salesRecords, forecastConfig]);
+
+  const evaluableDishes = evaluationResults.filter(e => e.evaluatedDaysCount > 0);
 
   const avgNaiveMape = useMemo(() => {
-    if (evaluationResults.length === 0) return 0;
-    const sum = evaluationResults.reduce((s, r) => s + r.naiveMape, 0);
-    return Math.round((sum / evaluationResults.length) * 10) / 10;
-  }, [evaluationResults]);
+    if (evaluableDishes.length === 0) return 0;
+    const sum = evaluableDishes.reduce((s, r) => s + r.naiveMape, 0);
+    return Math.round((sum / evaluableDishes.length) * 10) / 10;
+  }, [evaluableDishes]);
 
   const avgWmaMape = useMemo(() => {
-    if (evaluationResults.length === 0) return 0;
-    const sum = evaluationResults.reduce((s, r) => s + r.wmaMape, 0);
-    return Math.round((sum / evaluationResults.length) * 10) / 10;
-  }, [evaluationResults]);
+    if (evaluableDishes.length === 0) return 0;
+    const sum = evaluableDishes.reduce((s, r) => s + r.wmaMape, 0);
+    return Math.round((sum / evaluableDishes.length) * 10) / 10;
+  }, [evaluableDishes]);
 
   const avgMae = useMemo(() => {
-    if (evaluationResults.length === 0) return 0;
-    const sum = evaluationResults.reduce((s, r) => s + r.wmaMae, 0);
-    return Math.round((sum / evaluationResults.length) * 10) / 10;
-  }, [evaluationResults]);
+    if (evaluableDishes.length === 0) return 0;
+    const sum = evaluableDishes.reduce((s, r) => s + r.wmaMae, 0);
+    return Math.round((sum / evaluableDishes.length) * 10) / 10;
+  }, [evaluableDishes]);
 
   const avgImprovement = useMemo(() => {
     if (avgNaiveMape === 0) return 0;
     return Math.round(((avgNaiveMape - avgWmaMape) / avgNaiveMape) * 1000) / 10;
   }, [avgNaiveMape, avgWmaMape]);
 
-  const handleSimulate = () => {
-    setIsSimulating(true);
-    setTimeout(() => {
-      setIsSimulating(false);
-    }, 400);
+  const handleRunHybridForecast = async () => {
+    if (activeMenu.length === 0) return;
+    setIsRunningAi(true);
+    setFallbackNotice(null);
+
+    const baseInputs = activeMenu.map(dish => {
+      const statOnly = generateComprehensiveForecast(
+        dish,
+        salesRecords,
+        businessDate,
+        { condition: weatherCondition, temperatureC, precipChance: rainChance },
+        eventTag,
+        forecastConfig
+      );
+      return {
+        item: dish,
+        baseSales: statOnly.baseStatisticalForecast,
+        recentAverage: statOnly.naivePrediction
+      };
+    });
+
+    const response = await requestContextualForecast({
+      targetDate: businessDate,
+      weather: { condition: weatherCondition, temperatureC, precipChance: rainChance },
+      eventContext: eventTag,
+      dishes: baseInputs,
+      config: forecastConfig
+    });
+
+    const adjMap: Record<string, ContextualDishAdjustment> = {};
+    for (const adj of response.adjustments) {
+      adjMap[adj.dishId] = adj;
+    }
+
+    setAiAdjustmentsByDish(adjMap);
+    setAiAssessment(response.generalAssessment);
+    setAiModelVersion(response.modelVersion);
+    setIsOfflineFallback(response.isOfflineFallback);
+    if (response.isOfflineFallback && response.fallbackReason) {
+      setFallbackNotice(response.fallbackReason);
+    }
+
+    const updatedForecasts = activeMenu.map(dish =>
+      generateComprehensiveForecast(
+        dish,
+        salesRecords,
+        businessDate,
+        { condition: weatherCondition, temperatureC, precipChance: rainChance },
+        eventTag,
+        forecastConfig,
+        adjMap[dish.id] || null
+      )
+    );
+
+    const decomposed = decomposePrepSheet(businessDate, activeMenu, ingredients, updatedForecasts, {});
+    const predRecord: PredictionRecord = {
+      id: `pred_${businessDate}_rst_rustic_table`,
+      restaurantId: 'rst_rustic_table',
+      targetDate: businessDate,
+      weatherForecast: {
+        condition: weatherCondition,
+        temperatureC,
+        precipitationProbability: rainChance
+      },
+      eventContext: eventTag,
+      generalAssessment: response.generalAssessment,
+      modelVersion: response.modelVersion,
+      isOfflineFallback: response.isOfflineFallback,
+      createdAt: Date.now(),
+      itemPredictions: updatedForecasts.map(f => {
+        const plan = decomposed.dishPlans.find(p => p.dishId === f.dishId);
+        return {
+          menuItemId: f.dishId,
+          dishName: f.dishName,
+          station: f.station,
+          baseCalculated: f.baseStatisticalForecast,
+          aiAdjusted: f.expectedSales,
+          recommendedPrep: f.recommendedPrep,
+          managerOverride: null,
+          safetyBufferPct: f.safetyBufferPct,
+          confidenceScore: f.confidenceScore,
+          rationale: f.rationale,
+          riskOfWaste: f.riskOfWaste,
+          requiredIngredients: (plan?.ingredientBreakdowns || []).map(b => ({
+            ingredientId: b.ingredientId,
+            name: b.ingredientName,
+            grossRequired: b.grossInStockUnit,
+            currentStock: b.currentStock,
+            netRequired: Math.max(0, Math.round((b.grossInStockUnit - b.currentStock) * 100) / 100),
+            unit: b.stockUnit
+          }))
+        };
+      })
+    };
+
+    onSavePrediction(predRecord);
+    setIsRunningAi(false);
   };
 
   const handleCommitToPrep = () => {
@@ -108,41 +239,42 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="p-1 rounded bg-emerald-100 text-emerald-800">
-              <Sparkles className="w-4 h-4" />
-            </span>
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-base font-bold text-slate-900">
-              Deterministic Sales Forecasting & Demand Engine
+              Hybrid Sales Forecasting & Context Simulator
             </h2>
-            <Badge variant="emerald" size="sm">4-Week WMA + Weather Adjusted</Badge>
+            <span className="text-xs text-slate-500">
+              · {isOfflineFallback ? 'Deterministic Statistical Baseline' : `AI-Assisted (${aiModelVersion})`}
+            </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Strict zero future data leakage with day-of-week seasonality, trend factor, and uncertainty intervals
+            {forecastConfig.lookbackWeeks}-week same-weekday WMA without lookahead leakage, bounded within [-{forecastConfig.maxDecreasePct}%, +{forecastConfig.maxIncreasePct}%]
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-xs font-medium">
             <button
+              type="button"
               onClick={() => setActiveTab('forecast')}
-              className={`px-3 py-1.5 rounded-md transition-colors ${
+              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap shrink-0 ${
                 activeTab === 'forecast'
                   ? 'bg-white text-slate-900 shadow-xs font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Live Demand Forecast
+              Demand Forecast
             </button>
             <button
+              type="button"
               onClick={() => setActiveTab('evaluation')}
-              className={`px-3 py-1.5 rounded-md transition-colors ${
+              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap shrink-0 ${
                 activeTab === 'evaluation'
                   ? 'bg-white text-slate-900 shadow-xs font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Model Evaluation & Accuracy Metrics
+              Accuracy & Backtesting
             </button>
           </div>
 
@@ -151,6 +283,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
               size="sm"
               variant="primary"
               onClick={handleCommitToPrep}
+              className="whitespace-nowrap shrink-0"
               leftIcon={<CheckCircle2 className="w-3.5 h-3.5" />}
             >
               Push to Prep Sheet
@@ -160,11 +293,18 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
       </div>
 
       {appliedToast && (
-        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            <span>Recommended prep targets pushed to the Station Prep Sheet with station safety buffers.</span>
-          </div>
+        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>Recommended prep targets pushed to the Station Prep Sheet.</span>
+        </div>
+      )}
+
+      {fallbackNotice && (
+        <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-950 text-xs flex items-center gap-2">
+          <WifiOff className="w-4 h-4 text-amber-700 shrink-0" />
+          <span>
+            AI contextual endpoint unavailable ({fallbackNotice}). Deterministic statistical heuristics applied seamlessly.
+          </span>
         </div>
       )}
 
@@ -174,21 +314,22 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">
-                  External Demand & Weather Simulation Controls
+                  Weather & Local Event Context
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Adjust simulated environmental conditions to inspect deterministic demand elasticity adjustments.
+                  Statistical baseline runs locally; click Run Hybrid AI Forecast to request server-side Gemini contextual modifiers.
                 </p>
               </div>
 
               <Button
                 size="sm"
-                variant="outline"
-                onClick={handleSimulate}
-                isLoading={isSimulating}
-                leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+                variant="primary"
+                onClick={handleRunHybridForecast}
+                isLoading={isRunningAi}
+                className="whitespace-nowrap shrink-0"
+                leftIcon={isRunningAi ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
               >
-                Re-evaluate Model
+                Run Hybrid AI Forecast
               </Button>
             </div>
 
@@ -199,7 +340,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                 </label>
                 <select
                   value={weatherCondition}
-                  onChange={e => setWeatherCondition(e.target.value as any)}
+                  onChange={e => setWeatherCondition(e.target.value as 'Clear' | 'Rain' | 'Cloudy' | 'Storm')}
                   className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none"
                 >
                   <option value="Clear">Clear & Sunny</option>
@@ -211,21 +352,21 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  Temperature: {temperatureC}°C ({Math.round(temperatureC * 1.8 + 32)}°F)
+                  Temperature: <span className="font-mono font-tabular-nums">{temperatureC}°C ({Math.round(temperatureC * 1.8 + 32)}°F)</span>
                 </label>
                 <input
                   type="range"
                   min="2"
                   max="36"
                   value={temperatureC}
-                  onChange={e => setTemperatureC(parseInt(e.target.value))}
+                  onChange={e => setTemperatureC(parseInt(e.target.value, 10))}
                   className="w-full accent-emerald-600 cursor-pointer"
                 />
               </div>
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  Precipitation Probability: {rainChance}%
+                  Precipitation Probability: <span className="font-mono font-tabular-nums">{rainChance}%</span>
                 </label>
                 <input
                   type="range"
@@ -233,7 +374,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                   max="100"
                   step="5"
                   value={rainChance}
-                  onChange={e => setRainChance(parseInt(e.target.value))}
+                  onChange={e => setRainChance(parseInt(e.target.value, 10))}
                   className="w-full accent-emerald-600 cursor-pointer"
                 />
               </div>
@@ -254,167 +395,214 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                 </select>
               </div>
             </div>
+
+            {aiAssessment && (
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-900">
+                    {isOfflineFallback ? 'Deterministic Heuristic Assessment' : 'Gemini Contextual Assessment'}
+                  </span>
+                  <Badge variant={isOfflineFallback ? 'amber' : 'emerald'} size="sm">
+                    {isOfflineFallback ? 'Offline / Fallback' : 'AI Verified'}
+                  </Badge>
+                </div>
+                <p className="text-slate-700 leading-relaxed">{aiAssessment}</p>
+              </div>
+            )}
           </div>
 
-          <div className="bg-slate-900 text-slate-200 p-4 rounded-xl flex items-center justify-between text-xs">
+          <div className="bg-slate-900 text-slate-200 p-4 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-3">
               <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
               <div>
-                <p className="font-semibold text-white">ADR-001 Deterministic Safety Rails Active</p>
+                <p className="font-semibold text-white">Bounded Safety Constraints Enforced</p>
                 <p className="text-slate-400">
-                  Adjustment multipliers are programmatically clamped within [-30%, +35%] of the 4-week moving average. Zero runaway prep spikes.
+                  All multipliers are programmatically clamped to [-{forecastConfig.maxDecreasePct}%, +{forecastConfig.maxIncreasePct}%] relative to the statistical WMA baseline.
                 </p>
               </div>
             </div>
-            <Badge variant="emerald" size="sm">Audited & Bounded</Badge>
+            <Badge variant="emerald" size="sm">Clamping Active</Badge>
           </div>
 
           <Card
             title="Dish-by-Dish Demand Forecast & Uncertainty Intervals"
-            subtitle="Comparing 4-week historical baseline vs. contextual adjustment with 80% prediction bands"
+            subtitle="4-week same-weekday WMA baseline, bounded adjustment, 80% / 95% intervals, and data sufficiency status"
             noPadding
           >
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
-                    <th className="py-2.5 px-4 font-semibold">Menu Dish</th>
-                    <th className="py-2.5 px-3 font-semibold">Station</th>
-                    <th className="py-2.5 px-3 font-semibold text-right">4-Wk Base Avg</th>
-                    <th className="py-2.5 px-3 font-semibold text-right">Context Delta</th>
-                    <th className="py-2.5 px-3 font-semibold text-right">Expected Sales</th>
-                    <th className="py-2.5 px-3 font-semibold text-center">80% Confidence Band</th>
-                    <th className="py-2.5 px-3 font-semibold text-right">Recommended Prep</th>
-                    <th className="py-2.5 px-3 font-semibold">Waste Risk</th>
-                    <th className="py-2.5 px-4 font-semibold">Data Depth</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {forecastResults.map(res => {
-                    const isPositive = res.clampedModifierPct > 0;
-                    const isNegative = res.clampedModifierPct < 0;
+            {forecastResults.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-500">
+                No active menu dishes available to forecast. Add menu items first.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                      <th className="py-2.5 px-4 font-semibold">Menu Dish</th>
+                      <th className="py-2.5 px-3 font-semibold">Station</th>
+                      <th className="py-2.5 px-3 font-semibold text-right">4-Wk Base</th>
+                      <th className="py-2.5 px-3 font-semibold text-right">Delta</th>
+                      <th className="py-2.5 px-3 font-semibold text-right">Expected</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">80% Band</th>
+                      <th className="py-2.5 px-3 font-semibold text-right">Rec. Prep</th>
+                      <th className="py-2.5 px-3 font-semibold">Waste Risk</th>
+                      <th className="py-2.5 px-4 font-semibold">Data Depth</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {forecastResults.map(res => {
+                      const isPositive = res.clampedModifierPct > 0;
+                      const isNegative = res.clampedModifierPct < 0;
 
-                    return (
-                      <tr key={res.dishId} className="hover:bg-slate-50/60 transition-colors">
-                        <td className="py-3 px-4 font-semibold text-slate-900">
-                          <div>
-                            <p>{res.dishName}</p>
-                            <p className="text-[11px] font-normal text-slate-500 mt-0.5">{res.rationale}</p>
-                          </div>
-                        </td>
-                        <td className="py-3 px-3">
-                          <Badge variant="slate" size="sm">{res.station}</Badge>
-                        </td>
-                        <td className="py-3 px-3 text-right font-medium text-slate-600 font-tabular-nums">
-                          {res.baseStatisticalForecast}
-                        </td>
-                        <td className="py-3 px-3 text-right font-bold font-tabular-nums">
-                          <span className={isPositive ? 'text-emerald-700' : isNegative ? 'text-amber-700' : 'text-slate-500'}>
-                            {isPositive ? `+${Math.round(res.clampedModifierPct * 100)}%` : isNegative ? `${Math.round(res.clampedModifierPct * 100)}%` : '0%'}
-                          </span>
-                        </td>
-                        <td className="py-3 px-3 text-right font-bold text-slate-900 font-tabular-nums text-sm">
-                          {res.expectedSales}
-                        </td>
-                        <td className="py-3 px-3 text-center font-mono text-slate-600 font-tabular-nums">
-                          [{res.confidenceInterval80[0]} - {res.confidenceInterval80[1]}]
-                        </td>
-                        <td className="py-3 px-3 text-right font-extrabold text-emerald-800 font-tabular-nums text-sm">
-                          {res.recommendedPrep}
-                        </td>
-                        <td className="py-3 px-3">
-                          <Badge
-                            variant={res.riskOfWaste === 'High' ? 'rose' : res.riskOfWaste === 'Medium' ? 'amber' : 'emerald'}
-                            size="sm"
-                            dot
-                          >
-                            {res.riskOfWaste}
-                          </Badge>
-                        </td>
-                        <td className="py-3 px-4">
-                          <Badge
-                            variant={res.dataSufficiency.status === 'optimal' ? 'emerald' : res.dataSufficiency.status === 'moderate' ? 'blue' : 'amber'}
-                            size="sm"
-                          >
-                            {res.dataSufficiency.status === 'optimal' ? 'Optimal (4 Wks)' : res.dataSufficiency.status === 'moderate' ? 'Moderate Depth' : 'Baseline'}
-                          </Badge>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                      return (
+                        <tr key={res.dishId} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="py-3 px-4 font-semibold text-slate-900">
+                            <div>
+                              <p>{res.dishName}</p>
+                              <p className="text-xs font-normal text-slate-500 mt-0.5">{res.rationale}</p>
+                            </div>
+                          </td>
+                          <td className="py-3 px-3">
+                            <Badge variant="slate" size="sm">{res.station}</Badge>
+                          </td>
+                          <td className="py-3 px-3 text-right font-medium text-slate-600 font-tabular-nums">
+                            {res.baseStatisticalForecast}
+                          </td>
+                          <td className="py-3 px-3 text-right font-bold font-tabular-nums">
+                            <span className={isPositive ? 'text-emerald-700' : isNegative ? 'text-amber-700' : 'text-slate-500'}>
+                              {isPositive ? `+${Math.round(res.clampedModifierPct * 100)}%` : isNegative ? `${Math.round(res.clampedModifierPct * 100)}%` : '0%'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-right font-bold text-slate-900 font-tabular-nums text-sm">
+                            {res.expectedSales}
+                          </td>
+                          <td className="py-3 px-3 text-center font-mono text-slate-600 font-tabular-nums whitespace-nowrap">
+                            [{res.confidenceInterval80[0]} - {res.confidenceInterval80[1]}]
+                          </td>
+                          <td className="py-3 px-3 text-right font-bold text-emerald-800 font-tabular-nums text-sm">
+                            {res.recommendedPrep}
+                          </td>
+                          <td className="py-3 px-3">
+                            <Badge
+                              variant={res.riskOfWaste === 'High' ? 'rose' : res.riskOfWaste === 'Medium' ? 'amber' : 'emerald'}
+                              size="sm"
+                            >
+                              {res.riskOfWaste}
+                            </Badge>
+                          </td>
+                          <td className="py-3 px-4">
+                            <Badge
+                              variant={
+                                res.dataSufficiency.status === 'optimal'
+                                  ? 'emerald'
+                                  : res.dataSufficiency.status === 'moderate'
+                                  ? 'blue'
+                                  : 'amber'
+                              }
+                              size="sm"
+                            >
+                              {res.dataSufficiency.status === 'optimal'
+                                ? 'Optimal'
+                                : res.dataSufficiency.status === 'moderate'
+                                ? 'Moderate'
+                                : 'Insufficient'}
+                            </Badge>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
         </>
       ) : (
         <div className="space-y-6">
+          {evaluableDishes.length === 0 && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-950 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+              <span>
+                Rolling-origin backtesting requires at least 15 distinct operating days per dish. Currently showing fallback status for dishes with shorter histories.
+              </span>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200">
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <p className="text-xs font-medium text-slate-500">
                 WMA Forecast MAPE
               </p>
               <p className="text-2xl font-bold text-emerald-700 mt-1 font-tabular-nums">
                 {avgWmaMape}%
               </p>
-              <p className="text-xs text-slate-400 mt-1">Mean Absolute % Error</p>
+              <p className="text-xs text-slate-500 mt-1">Mean Absolute % Error</p>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-slate-200">
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <p className="text-xs font-medium text-slate-500">
                 Naive Baseline MAPE
               </p>
-              <p className="text-2xl font-bold text-slate-600 mt-1 font-tabular-nums">
+              <p className="text-2xl font-bold text-slate-700 mt-1 font-tabular-nums">
                 {avgNaiveMape}%
               </p>
-              <p className="text-xs text-slate-400 mt-1">Same-Day-Last-Week Model</p>
+              <p className="text-xs text-slate-500 mt-1">Same-Day-Last-Week Model</p>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-slate-200">
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Accuracy Gain vs Naive
+              <p className="text-xs font-medium text-slate-500">
+                Error Reduction vs Naive
               </p>
               <p className="text-2xl font-bold text-emerald-700 mt-1 font-tabular-nums">
-                +{avgImprovement}%
+                {avgImprovement >= 0 ? `+${avgImprovement}%` : `${avgImprovement}%`}
               </p>
-              <p className="text-xs text-slate-400 mt-1">Error reduction percentage</p>
+              <p className="text-xs text-slate-500 mt-1">Relative MAPE comparison</p>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-slate-200">
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <p className="text-xs font-medium text-slate-500">
                 Average Portion MAE
               </p>
               <p className="text-2xl font-bold text-slate-900 mt-1 font-tabular-nums">
                 {avgMae} portions
               </p>
-              <p className="text-xs text-slate-400 mt-1">Mean error per dish service</p>
+              <p className="text-xs text-slate-500 mt-1">Mean absolute error per dish</p>
             </div>
           </div>
 
           <Card
-            title="Empirical Rolling-Origin Backtesting Matrix (14-Day Evaluation Window)"
-            subtitle="Evaluating actual sales against Naive and 4-Week Weighted Moving Average models without lookahead data leakage"
+            title="Rolling-Origin Backtesting Matrix (Zero Future Data Leakage)"
+            subtitle="Compares 4-week weighted moving average against naive same-day-last-week baseline using strictly prior dates"
             noPadding
           >
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold">
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
                     <th className="py-3 px-4">Menu Dish</th>
+                    <th className="py-3 px-3 text-right">Eval Days</th>
                     <th className="py-3 px-3 text-right">Naive MAE</th>
-                    <th className="py-3 px-3 text-right">Naive MAPE (%)</th>
+                    <th className="py-3 px-3 text-right">Naive MAPE</th>
                     <th className="py-3 px-3 text-right">WMA MAE</th>
-                    <th className="py-3 px-3 text-right">WMA MAPE (%)</th>
+                    <th className="py-3 px-3 text-right">WMA MAPE</th>
                     <th className="py-3 px-3 text-right">WMA RMSE</th>
-                    <th className="py-3 px-3 text-right">Accuracy Gain</th>
-                    <th className="py-3 px-4">Forecast Bias</th>
+                    <th className="py-3 px-3 text-right">Gain</th>
+                    <th className="py-3 px-4">Bias</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {evaluationResults.map(evalItem => (
                     <tr key={evalItem.dishId} className="hover:bg-slate-50/50">
                       <td className="py-2.5 px-4 font-semibold text-slate-900">
-                        {evalItem.dishName}
+                        <div>
+                          <p>{evalItem.dishName}</p>
+                          {evalItem.evaluatedDaysCount === 0 && (
+                            <p className="text-xs font-normal text-amber-700">{evalItem.evaluationNote}</p>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-slate-600 font-tabular-nums">
+                        {evalItem.evaluatedDaysCount}
                       </td>
                       <td className="py-2.5 px-3 text-right text-slate-600 font-tabular-nums">
                         {evalItem.naiveMae}
@@ -431,11 +619,14 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
                       <td className="py-2.5 px-3 text-right text-slate-700 font-tabular-nums">
                         {evalItem.wmaRmse}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-extrabold text-emerald-800 font-tabular-nums">
-                        +{evalItem.accuracyImprovementPct}%
+                      <td className="py-2.5 px-3 text-right font-bold text-emerald-800 font-tabular-nums">
+                        {evalItem.accuracyImprovementPct >= 0 ? `+${evalItem.accuracyImprovementPct}%` : `${evalItem.accuracyImprovementPct}%`}
                       </td>
                       <td className="py-2.5 px-4">
-                        <Badge variant="emerald" size="sm">
+                        <Badge
+                          variant={evalItem.forecastBias === 'Balanced' ? 'emerald' : 'amber'}
+                          size="sm"
+                        >
                           {evalItem.forecastBias}
                         </Badge>
                       </td>
