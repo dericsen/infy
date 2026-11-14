@@ -6,6 +6,7 @@ import {
   Ingredient,
   SaleRecord,
   WasteRecord,
+  WasteReason,
   StockMovementRecord,
   StockMovementType,
   ClosedDayRecord,
@@ -46,21 +47,16 @@ import {
   logoutUser
 } from './services/authService';
 import { AppLayout } from './components/layout/AppLayout';
-import { DashboardView } from './components/views/DashboardView';
-import { PrepSheetView } from './components/views/PrepSheetView';
-import { PredictionView } from './components/views/PredictionView';
-import { MenuView } from './components/views/MenuView';
-import { IngredientsView } from './components/views/IngredientsView';
-import { InventoryView } from './components/views/InventoryView';
-import { SalesView } from './components/views/SalesView';
-import { WasteView } from './components/views/WasteView';
-import { SettingsView } from './components/views/SettingsView';
+import { TodayView } from './components/views/TodayView';
+import { ForecastView } from './components/views/ForecastView';
+import { KitchenView } from './components/views/KitchenView';
+import { RecordsView } from './components/views/RecordsView';
 import { Modal } from './components/common/Modal';
 import { Button } from './components/common/Button';
 import { ShieldCheck, LogIn, ChefHat, AlertTriangle } from 'lucide-react';
 
 export default function App() {
-  const [currentRoute, setCurrentRoute] = useState<AppRoute>('dashboard');
+  const [currentRoute, setCurrentRoute] = useState<AppRoute>('today');
   const [selectedStationFilter, setSelectedStationFilter] = useState<Station | 'All'>('All');
   const [businessDate, setBusinessDate] = useState<string>('2026-11-13');
   const [selectedShift, setSelectedShift] = useState<'All Day' | 'Lunch' | 'Dinner'>('All Day');
@@ -68,7 +64,13 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+
   const [isQuickWasteModalOpen, setIsQuickWasteModalOpen] = useState(false);
+  const [wasteDishId, setWasteDishId] = useState('');
+  const [wasteQty, setWasteQty] = useState('3');
+  const [wasteReason, setWasteReason] = useState<WasteReason>('Overproduction');
+  const [wasteLoggedBy, setWasteLoggedBy] = useState('Chef Marco');
+  const [wasteError, setWasteError] = useState<string | null>(null);
 
   const [isDbLoading, setIsDbLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
@@ -127,7 +129,6 @@ export default function App() {
 
     testFirestoreConnection();
     const unsubscribe = subscribeToAuthChanges(user => setCurrentUser(user));
-
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
@@ -283,7 +284,7 @@ export default function App() {
     const nextOverrides = { ...prepOverrides, ...adjustments };
     setPrepOverrides(nextOverrides);
     PrepOverrideRepository.saveForPrepSheet(prepSheetId, nextOverrides).catch(err => setDbError(String(err)));
-    setCurrentRoute('prep-sheet');
+    setCurrentRoute('today');
   };
 
   const handleSaveMenuItem = (item: MenuItem) => {
@@ -329,9 +330,7 @@ export default function App() {
     reason: string;
   }): { success: boolean; error?: string } => {
     const target = ingredients.find(i => i.id === params.ingredientId);
-    if (!target) {
-      return { success: false, error: 'Selected ingredient not found.' };
-    }
+    if (!target) return { success: false, error: 'Selected ingredient not found.' };
 
     const previousStock = target.currentStock;
     let newStock = previousStock;
@@ -344,15 +343,13 @@ export default function App() {
       if (previousStock - params.quantity < 0) {
         return {
           success: false,
-          error: `Cannot reduce ${params.quantity} ${target.unit}: only ${previousStock} ${target.unit} currently on hand.`
+          error: `Cannot reduce ${params.quantity} ${target.unit}: only ${previousStock} ${target.unit} on hand.`
         };
       }
       newStock = Math.round((previousStock - params.quantity) * 100) / 100;
       delta = -Math.round(params.quantity * 100) / 100;
     } else {
-      if (params.quantity < 0) {
-        return { success: false, error: 'Stock count cannot be negative.' };
-      }
+      if (params.quantity < 0) return { success: false, error: 'Stock count cannot be negative.' };
       newStock = Math.round(params.quantity * 100) / 100;
       delta = Math.round((newStock - previousStock) * 100) / 100;
     }
@@ -378,14 +375,13 @@ export default function App() {
 
     IngredientRepository.save(updatedIng).catch(err => setDbError(String(err)));
     StockMovementRepository.save(movement).catch(err => setDbError(String(err)));
-
     return { success: true };
   };
 
   const handleBatchCommitStockCounts = (counts: Record<string, number>): { success: boolean; error?: string; changedCount: number } => {
     for (const [id, val] of Object.entries(counts)) {
       if (!Number.isFinite(val) || val < 0) {
-        return { success: false, error: `Invalid negative count detected for ingredient ${id}.`, changedCount: 0 };
+        return { success: false, error: `Invalid negative count for ${id}.`, changedCount: 0 };
       }
     }
 
@@ -410,7 +406,7 @@ export default function App() {
           previousStock: ing.currentStock,
           newStock: rounded,
           unit: ing.unit,
-          reason: 'Physical count sheet commit',
+          reason: 'Physical count commit',
           date: businessDate,
           timestamp: new Date().toISOString()
         });
@@ -432,9 +428,7 @@ export default function App() {
 
   const handleRecordSaleTransaction = (sale: SaleRecord): { success: boolean; error?: string; deductedDetails: string[] } => {
     const matchedDish = menuItems.find(m => m.id === sale.menuItemId);
-    if (!matchedDish) {
-      return { success: false, error: 'Menu dish not found.', deductedDetails: [] };
-    }
+    if (!matchedDish) return { success: false, error: 'Menu dish not found.', deductedDetails: [] };
 
     const deductedDetails: string[] = [];
     const newMovements: StockMovementRecord[] = [];
@@ -444,7 +438,7 @@ export default function App() {
 
       const conv = convertQuantity(bomItem.quantity * sale.quantitySold, bomItem.unit, ing.unit);
       if (!conv.compatible) {
-        deductedDetails.push(`${ing.name}: skipped (unit mismatch ${bomItem.unit} vs ${ing.unit})`);
+        deductedDetails.push(`${ing.name}: skipped (unit mismatch)`);
         return ing;
       }
 
@@ -473,9 +467,7 @@ export default function App() {
 
     setSalesRecords(prev => [sale, ...prev]);
     setIngredients(updatedIngredients);
-    if (newMovements.length > 0) {
-      setStockMovements(prev => [...newMovements, ...prev]);
-    }
+    if (newMovements.length > 0) setStockMovements(prev => [...newMovements, ...prev]);
 
     SalesRepository.save(sale).catch(err => setDbError(String(err)));
     IngredientRepository.saveMany(updatedIngredients).catch(err => setDbError(String(err)));
@@ -514,6 +506,41 @@ export default function App() {
   const handleAddWasteRecord = (rec: WasteRecord) => {
     setWasteRecords(prev => [rec, ...prev]);
     WasteRepository.save(rec).catch(err => setDbError(String(err)));
+  };
+
+  const handleSaveQuickWaste = () => {
+    setWasteError(null);
+    const dish = menuItems.find(m => m.id === (wasteDishId || menuItems[0]?.id));
+    if (!dish) {
+      setWasteError('No menu items available.');
+      return;
+    }
+    const qty = parseInt(wasteQty, 10);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setWasteError('Discarded portions must be at least 1.');
+      return;
+    }
+    if (!wasteLoggedBy.trim()) {
+      setWasteError('Enter staff name.');
+      return;
+    }
+
+    handleAddWasteRecord({
+      id: `wst_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      restaurantId: dish.restaurantId || 'rst_rustic_table',
+      date: businessDate,
+      itemId: dish.id,
+      itemType: 'menu_item',
+      name: dish.name,
+      quantity: qty,
+      unit: 'portions',
+      unitCost: dish.targetCost,
+      totalLossCost: Math.round(dish.targetCost * qty * 100) / 100,
+      reason: wasteReason,
+      loggedBy: wasteLoggedBy.trim(),
+      station: dish.station
+    });
+    setIsQuickWasteModalOpen(false);
   };
 
   const handleSaveSettings = (updated: AppSettings) => {
@@ -570,7 +597,6 @@ export default function App() {
       if (!data || typeof data !== 'object') {
         return { success: false, error: 'Backup file does not contain a valid JSON object.' };
       }
-
       if (Array.isArray(data.menuItems)) {
         setMenuItems(data.menuItems);
         MenuRepository.saveMany(data.menuItems).catch(err => setDbError(String(err)));
@@ -625,46 +651,42 @@ export default function App() {
     if (isDbLoading) {
       return (
         <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-xs text-slate-600">
-          Loading IndexedDB restaurant database and forecasting engine...
+          Loading kitchen data...
         </div>
       );
     }
 
     switch (currentRoute) {
-      case 'dashboard':
+      case 'today':
         return (
-          <DashboardView
+          <TodayView
             businessDate={businessDate}
-            ingredients={ingredients}
-            wasteRecords={wasteRecords}
-            forecasts={forecasts}
+            selectedShift={selectedShift}
+            selectedStationFilter={selectedStationFilter}
             recommendationBundle={recommendationBundle}
+            checklistItems={checklistItems}
+            forecasts={forecasts}
+            contextualAnalysis={contextualAnalysis}
             weatherCondition={weatherCondition}
             temperatureC={temperatureC}
             rainChance={rainChance}
             eventTag={eventTag}
-            contextualAnalysis={contextualAnalysis}
             settings={settings}
-            onNavigate={setCurrentRoute}
-            onFilterStation={setSelectedStationFilter}
-            onQuickWasteLog={() => setIsQuickWasteModalOpen(true)}
-          />
-        );
-      case 'prep-sheet':
-        return (
-          <PrepSheetView
-            selectedStationFilter={selectedStationFilter}
+            onBusinessDateChange={date => {
+              setBusinessDate(date);
+              setContextualAnalysis(null);
+            }}
+            onShiftChange={setSelectedShift}
             onStationFilterChange={setSelectedStationFilter}
-            recommendationBundle={recommendationBundle}
-            checklistItems={checklistItems}
             onToggleChecklistItem={handleToggleChecklistItem}
             onResetPrepSheet={handleResetPrepSheet}
             onOverrideChange={handleOverrideChange}
+            onNavigate={setCurrentRoute}
           />
         );
-      case 'prediction':
+      case 'forecast':
         return (
-          <PredictionView
+          <ForecastView
             businessDate={businessDate}
             menuItems={menuItems}
             salesRecords={salesRecords}
@@ -699,69 +721,48 @@ export default function App() {
             onApplyForecastToPrep={handleApplyForecastToPrep}
           />
         );
-      case 'menu':
+      case 'kitchen':
         return (
-          <MenuView
+          <KitchenView
             menuItems={menuItems}
-            ingredients={ingredients}
-            onSaveMenuItem={handleSaveMenuItem}
-            onDeleteMenuItem={handleDeleteMenuItem}
-          />
-        );
-      case 'ingredients':
-        return (
-          <IngredientsView
-            ingredients={ingredients}
-            menuItems={menuItems}
-            businessDate={businessDate}
-            onSaveIngredient={handleSaveIngredient}
-            onDeleteIngredient={handleDeleteIngredient}
-          />
-        );
-      case 'inventory':
-        return (
-          <InventoryView
             ingredients={ingredients}
             stockMovements={stockMovements}
             businessDate={businessDate}
+            onSaveMenuItem={handleSaveMenuItem}
+            onDeleteMenuItem={handleDeleteMenuItem}
+            onSaveIngredient={handleSaveIngredient}
+            onDeleteIngredient={handleDeleteIngredient}
             onAdjustInventory={handleAdjustInventory}
             onBatchCommitStockCounts={handleBatchCommitStockCounts}
           />
         );
-      case 'sales':
+      case 'records':
         return (
-          <SalesView
+          <RecordsView
             salesRecords={salesRecords}
+            wasteRecords={wasteRecords}
             menuItems={menuItems}
             ingredients={ingredients}
             closedDays={closedDays}
+            settings={settings}
             businessDate={businessDate}
+            currentUser={currentUser}
             onUploadCsv={handleUploadCsvSales}
             onRecordSaleTransaction={handleRecordSaleTransaction}
             onUpdateSaleRecord={handleUpdateSaleRecord}
             onAddClosedDay={handleAddClosedDay}
             onRemoveClosedDay={handleRemoveClosedDay}
-          />
-        );
-      case 'waste':
-        return (
-          <WasteView
-            wasteRecords={wasteRecords}
-            menuItems={menuItems}
-            businessDate={businessDate}
-            onAddWasteRecord={handleAddWasteRecord}
-            isOpenQuickLogModal={isQuickWasteModalOpen}
-            onCloseQuickLogModal={() => setIsQuickWasteModalOpen(false)}
-          />
-        );
-      case 'settings':
-        return (
-          <SettingsView
-            settings={settings}
+            onOpenWasteModal={() => {
+              setWasteError(null);
+              if (!wasteDishId && menuItems[0]) setWasteDishId(menuItems[0].id);
+              setIsQuickWasteModalOpen(true);
+            }}
             onSaveSettings={handleSaveSettings}
             onResetToBenchmark={handleResetBenchmark}
             onExportJson={handleExportJson}
             onImportJson={handleImportJson}
+            onOpenAuthModal={() => setIsAuthModalOpen(true)}
+            onLogout={logoutUser}
           />
         );
     }
@@ -772,21 +773,11 @@ export default function App() {
       <AppLayout
         currentRoute={currentRoute}
         onRouteChange={setCurrentRoute}
-        selectedStationFilter={selectedStationFilter}
-        onStationFilterChange={setSelectedStationFilter}
-        businessDate={businessDate}
-        onBusinessDateChange={date => {
-          setBusinessDate(date);
-          setContextualAnalysis(null);
+        onQuickWasteLog={() => {
+          setWasteError(null);
+          if (!wasteDishId && menuItems[0]) setWasteDishId(menuItems[0].id);
+          setIsQuickWasteModalOpen(true);
         }}
-        selectedShift={selectedShift}
-        onShiftChange={setSelectedShift}
-        isOnline={isOnline}
-        currentUser={currentUser}
-        onLogin={() => setIsAuthModalOpen(true)}
-        onLogout={logoutUser}
-        onResetBenchmark={handleResetBenchmark}
-        onQuickWasteLog={() => setIsQuickWasteModalOpen(true)}
       >
         {dbError && (
           <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between">
@@ -803,15 +794,83 @@ export default function App() {
       </AppLayout>
 
       <Modal
+        isOpen={isQuickWasteModalOpen}
+        onClose={() => setIsQuickWasteModalOpen(false)}
+        title="Log Waste Discard"
+        subtitle={`Service date: ${businessDate}`}
+        footer={
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setIsQuickWasteModalOpen(false)}>Cancel</Button>
+            <Button variant="danger" size="sm" onClick={handleSaveQuickWaste}>Save Waste</Button>
+          </div>
+        }
+      >
+        <div className="space-y-3 text-xs">
+          {wasteError && (
+            <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg">{wasteError}</div>
+          )}
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Menu Item</label>
+            <select
+              value={wasteDishId || menuItems[0]?.id || ''}
+              onChange={e => setWasteDishId(e.target.value)}
+              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg"
+            >
+              {menuItems.map(m => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.station}) — {settings.currency}{m.targetCost.toFixed(2)}/portion
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Portions</label>
+              <input
+                type="number"
+                min="1"
+                max="500"
+                value={wasteQty}
+                onChange={e => setWasteQty(e.target.value)}
+                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg font-bold"
+              />
+            </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Reason</label>
+              <select
+                value={wasteReason}
+                onChange={e => setWasteReason(e.target.value as WasteReason)}
+                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg"
+              >
+                <option value="Overproduction">Overproduction</option>
+                <option value="Expired">Expired</option>
+                <option value="Prep Mistake">Prep Mistake</option>
+                <option value="Quality Defect">Quality Defect</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Logged By</label>
+            <input
+              type="text"
+              value={wasteLoggedBy}
+              onChange={e => setWasteLoggedBy(e.target.value)}
+              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg"
+            />
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
-        title="Restaurant Staff Sign In"
-        subtitle="Sign in to associate checklist sign-offs with your staff profile"
+        title="Staff Sign In"
+        subtitle="Associate prep sign-offs with your staff profile"
       >
         <div className="space-y-4 py-2 text-xs">
           <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-900 flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
-            <span>Secure Firebase Authentication active. Primary operational data persists locally in IndexedDB.</span>
+            <span>Operational data persists locally in IndexedDB with optional Firebase Authentication.</span>
           </div>
 
           <div className="space-y-2.5">
@@ -822,7 +881,7 @@ export default function App() {
               isLoading={authLoading}
               leftIcon={<LogIn className="w-4 h-4" />}
             >
-              Sign In with Google Account
+              Sign In with Google
             </Button>
 
             <Button
@@ -832,7 +891,7 @@ export default function App() {
               isLoading={authLoading}
               leftIcon={<ChefHat className="w-4 h-4 text-emerald-600" />}
             >
-              Quick Sign In as Chef Marco (Demo Staff)
+              Quick Sign In as Chef Marco
             </Button>
           </div>
         </div>

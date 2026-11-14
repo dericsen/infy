@@ -1,91 +1,114 @@
 import React, { useState } from 'react';
-import { AppRoute, Station } from '../../types';
-import { Sidebar } from './Sidebar';
-import { Header } from './Header';
-import { DemoBanner } from '../common/DemoBanner';
-import { UserSession } from '../../services/authService';
+import { Trash2, Menu as MenuIcon, X } from 'lucide-react';
+import { AppRoute } from '../../types';
+import { Button } from '../common/Button';
 
 interface AppLayoutProps {
   currentRoute: AppRoute;
   onRouteChange: (route: AppRoute) => void;
-  selectedStationFilter: Station | 'All';
-  onStationFilterChange: (station: Station | 'All') => void;
-  businessDate: string;
-  onBusinessDateChange: (date: string) => void;
-  selectedShift: 'All Day' | 'Lunch' | 'Dinner';
-  onShiftChange: (shift: 'All Day' | 'Lunch' | 'Dinner') => void;
-  isOnline: boolean;
-  currentUser: UserSession | null;
-  onLogin: () => void;
-  onLogout: () => void;
-  onResetBenchmark: () => void;
   onQuickWasteLog: () => void;
-  restaurantName?: string;
-  restaurantConcept?: string;
-  hasDemoRecords?: boolean;
   children: React.ReactNode;
 }
 
 export const AppLayout: React.FC<AppLayoutProps> = ({
   currentRoute,
   onRouteChange,
-  selectedStationFilter,
-  onStationFilterChange,
-  businessDate,
-  onBusinessDateChange,
-  selectedShift,
-  onShiftChange,
-  isOnline,
-  currentUser,
-  onLogin,
-  onLogout,
-  onResetBenchmark,
   onQuickWasteLog,
-  restaurantName,
-  restaurantConcept,
-  hasDemoRecords,
   children
 }) => {
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const navLinks: { route: AppRoute; label: string }[] = [
+    { route: 'today', label: 'Today' },
+    { route: 'forecast', label: 'Forecast' },
+    { route: 'kitchen', label: 'Kitchen' },
+    { route: 'records', label: 'Records' }
+  ];
+
+  const handleSelectRoute = (route: AppRoute) => {
+    onRouteChange(route);
+    setMobileMenuOpen(false);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans antialiased text-slate-800">
-      <DemoBanner onResetBenchmark={onResetBenchmark} hasDemoRecords={hasDemoRecords} />
+      <header className="no-print sticky top-0 z-30 bg-white border-b border-slate-200">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-8">
+          <button
+            type="button"
+            onClick={() => handleSelectRoute('today')}
+            className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded"
+          >
+            Infy
+          </button>
 
-      <div className="flex-1 flex">
-        <Sidebar
-          currentRoute={currentRoute}
-          onRouteChange={onRouteChange}
-          selectedStationFilter={selectedStationFilter}
-          onStationFilterChange={onStationFilterChange}
-          restaurantName={restaurantName}
-          restaurantConcept={restaurantConcept}
-          isOpenMobile={isMobileSidebarOpen}
-          onCloseMobile={() => setIsMobileSidebarOpen(false)}
-        />
+          <nav className="hidden md:flex items-center gap-6">
+            {navLinks.map(link => {
+              const isActive = currentRoute === link.route;
+              return (
+                <button
+                  key={link.route}
+                  type="button"
+                  onClick={() => handleSelectRoute(link.route)}
+                  className={`py-1 text-sm font-medium transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+                    isActive
+                      ? 'text-emerald-700 border-emerald-600 font-semibold'
+                      : 'text-slate-600 border-transparent hover:text-slate-900 hover:border-slate-300'
+                  }`}
+                >
+                  {link.label}
+                </button>
+              );
+            })}
+          </nav>
 
-        <div className="flex-1 flex flex-col min-w-0 lg:pl-64">
-          <Header
-            currentRoute={currentRoute}
-            selectedStationFilter={selectedStationFilter}
-            businessDate={businessDate}
-            onBusinessDateChange={onBusinessDateChange}
-            selectedShift={selectedShift}
-            onShiftChange={onShiftChange}
-            isOnline={isOnline}
-            currentUser={currentUser}
-            onLogin={onLogin}
-            onLogout={onLogout}
-            onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
-            onNavigate={onRouteChange}
-            onQuickWasteLog={onQuickWasteLog}
-          />
-
-          <main className="flex-1 p-4 sm:p-6 max-w-7xl w-full mx-auto">
-            {children}
-          </main>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={onQuickWasteLog}
+              leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+              className="whitespace-nowrap shrink-0"
+            >
+              Log Waste
+            </Button>
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(prev => !prev)}
+              className="md:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100"
+              aria-label="Toggle navigation"
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <MenuIcon className="w-5 h-5" />}
+            </button>
+          </div>
         </div>
-      </div>
+
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t border-slate-200 bg-white px-4 py-2 flex items-center gap-2 overflow-x-auto">
+            {navLinks.map(link => {
+              const isActive = currentRoute === link.route;
+              return (
+                <button
+                  key={link.route}
+                  type="button"
+                  onClick={() => handleSelectRoute(link.route)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap shrink-0 ${
+                    isActive
+                      ? 'bg-emerald-50 text-emerald-800 font-semibold'
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  {link.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </header>
+
+      <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6">
+        {children}
+      </main>
     </div>
   );
 };
