@@ -59,7 +59,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv,.txt,.json,text/csv,application/json"
+              accept=".xlsx,.xls,.csv,.txt,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/json"
               className="hidden"
               onChange={e => {
                 const file = e.target.files?.[0];
@@ -76,7 +76,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               leftIcon={<Upload className="w-3.5 h-3.5" />}
               className="whitespace-nowrap shrink-0"
             >
-              Upload Sales CSV
+              Upload Excel / CSV
             </Button>
           </div>
         </div>

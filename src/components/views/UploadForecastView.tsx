@@ -26,7 +26,7 @@ import {
   evaluateBacktestMetrics
 } from '../../engine/forecastingEngine';
 import {
-  generateSampleMultiYearCsv,
+  downloadSampleExcelWorkbook,
   serializeMultiDayForecastCsv
 } from '../../utils/salesCsv';
 import { Button } from '../common/Button';
@@ -157,15 +157,8 @@ export const UploadForecastView: React.FC<UploadForecastViewProps> = ({
     return { avgWmaMape, count: evals.length };
   }, [activeDishes, salesRecords, closedDays]);
 
-  const handleDownloadSampleCsv = () => {
-    const csv = generateSampleMultiYearCsv('2026-11-12');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'sample_restaurant_sales_2years.csv';
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleDownloadSampleExcel = () => {
+    downloadSampleExcelWorkbook('contoh_data_penjualan_restoran.xlsx');
   };
 
   const handleExportForecastCsv = () => {
@@ -236,11 +229,11 @@ export const UploadForecastView: React.FC<UploadForecastViewProps> = ({
 
             <button
               type="button"
-              onClick={handleDownloadSampleCsv}
+              onClick={handleDownloadSampleExcel}
               className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 font-medium inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
-              <span>Sample CSV (2 Years)</span>
+              <span>Sample Excel (.xlsx)</span>
             </button>
 
             <button
@@ -285,7 +278,7 @@ export const UploadForecastView: React.FC<UploadForecastViewProps> = ({
           <input
             ref={dropInputRef}
             type="file"
-            accept=".csv,.txt,.json,text/csv,application/json"
+            accept=".xlsx,.xls,.csv,.txt,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/json"
             className="hidden"
             onChange={e => {
               const file = e.target.files?.[0];
@@ -301,10 +294,10 @@ export const UploadForecastView: React.FC<UploadForecastViewProps> = ({
             </div>
             <div className="text-left">
               <p className="text-sm font-semibold text-slate-900">
-                Drop your sales CSV or click to choose a file
+                Drop your Excel (.xlsx) or CSV sales file here
               </p>
               <p className="text-xs text-slate-500">
-                Columns supported: <span className="font-mono">date</span>, <span className="font-mono">dish_name</span>, <span className="font-mono">quantity_sold</span> (optional: <span className="font-mono">station</span>, <span className="font-mono">revenue</span>) · Supports comma or semicolon CSV
+                Columns supported: <span className="font-mono">date</span>, <span className="font-mono">dish_name</span>, <span className="font-mono">quantity_sold</span> (optional: <span className="font-mono">station</span>, <span className="font-mono">revenue</span>)
               </p>
             </div>
           </div>

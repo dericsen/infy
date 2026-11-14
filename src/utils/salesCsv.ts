@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import { MenuItem, SaleRecord, Station } from '../types';
 import { MultiDayForecastBundle } from '../engine/forecastingEngine';
 
@@ -46,7 +47,7 @@ function splitDelimitedLine(line: string, delimiter: string): string[] {
 }
 
 function normalizeHeader(h: string): string {
-  return h.replace(/^\uFEFF/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return String(h || '').replace(/^\uFEFF/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function isValidCalendarDate(year: number, month: number, day: number): boolean {
@@ -99,34 +100,33 @@ export function normalizeDateToIso(raw: string, preferDayFirst: boolean): string
   return null;
 }
 
+function formatCellAsDateString(cell: unknown): string {
+  if (typeof cell === 'number' && Number.isFinite(cell) && cell > 20000 && cell < 90000) {
+    const parsed = XLSX.SSF.parse_date_code(cell);
+    if (parsed && parsed.y && parsed.m && parsed.d) {
+      return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
+    }
+  }
+  if (cell instanceof Date && !Number.isNaN(cell.getTime())) {
+    const y = cell.getUTCFullYear();
+    const m = cell.getUTCMonth() + 1;
+    const d = cell.getUTCDate();
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+  return String(cell ?? '').trim();
+}
+
 function slugifyDishId(name: string): string {
   return `dish_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'item'}`;
 }
 
-export function parseUploadedSalesCsv(
-  csvText: string,
+function parseTabularMatrix(
+  headerRow: string[],
+  rawRows: string[][],
   existingMenuItems: MenuItem[],
-  restaurantId: string = 'rst_rustic_table'
+  restaurantId: string
 ): ParsedSalesUploadResult {
-  const cleanText = csvText.replace(/^\uFEFF/, '');
-  const lines = cleanText
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .filter(l => l.trim().length > 0);
-
-  if (lines.length < 2) {
-    return {
-      validRecords: [],
-      errors: ['CSV must include a header row and at least one sales row.'],
-      detectedDishes: [],
-      minDate: null,
-      maxDate: null
-    };
-  }
-
-  const delimiter = detectDelimiter(lines[0]);
-  const headers = splitDelimitedLine(lines[0], delimiter).map(normalizeHeader);
+  const headers = headerRow.map(normalizeHeader);
 
   const idxDate = headers.findIndex(h =>
     ['date', 'tanggal', 'tgl', 'saledate', 'businessdate', 'orderdate', 'day'].includes(h)
@@ -160,14 +160,7 @@ export function parseUploadedSalesCsv(
     };
   }
 
-  const rawRows: string[][] = [];
-  const rawDateSamples: string[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitDelimitedLine(lines[i], delimiter);
-    rawRows.push(cols);
-    if (cols[idxDate]) rawDateSamples.push(cols[idxDate]);
-  }
-
+  const rawDateSamples = rawRows.map(cols => cols[idxDate] || '').filter(Boolean);
   const preferDayFirst = inferDayFirstPreference(rawDateSamples);
   const menuById = new Map<string, MenuItem>(existingMenuItems.map(m => [m.id.toLowerCase(), m]));
   const menuByName = new Map<string, MenuItem>(existingMenuItems.map(m => [m.name.toLowerCase(), m]));
@@ -181,6 +174,8 @@ export function parseUploadedSalesCsv(
   for (let i = 0; i < rawRows.length; i++) {
     const rowNumber = i + 2;
     const cols = rawRows[i];
+    if (cols.every(c => !String(c || '').trim())) continue;
+
     const isoDate = normalizeDateToIso(cols[idxDate] || '', preferDayFirst);
 
     if (!isoDate) {
@@ -240,7 +235,7 @@ export function parseUploadedSalesCsv(
         mealPeriod,
         weatherCondition: 'Clear',
         temperatureC: 20,
-        eventTag: 'CSV Upload',
+        eventTag: 'File Upload',
         isDemonstrationData: false
       });
     }
@@ -259,6 +254,77 @@ export function parseUploadedSalesCsv(
     minDate,
     maxDate
   };
+}
+
+export function parseUploadedSalesCsv(
+  csvText: string,
+  existingMenuItems: MenuItem[],
+  restaurantId: string = 'rst_rustic_table'
+): ParsedSalesUploadResult {
+  const cleanText = csvText.replace(/^\uFEFF/, '');
+  const lines = cleanText
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .filter(l => l.trim().length > 0);
+
+  if (lines.length < 2) {
+    return {
+      validRecords: [],
+      errors: ['CSV must include a header row and at least one sales row.'],
+      detectedDishes: [],
+      minDate: null,
+      maxDate: null
+    };
+  }
+
+  const delimiter = detectDelimiter(lines[0]);
+  const headerRow = splitDelimitedLine(lines[0], delimiter);
+  const rawRows = lines.slice(1).map(line => splitDelimitedLine(line, delimiter));
+
+  return parseTabularMatrix(headerRow, rawRows, existingMenuItems, restaurantId);
+}
+
+export function parseUploadedExcelWorkbook(
+  buffer: ArrayBuffer,
+  existingMenuItems: MenuItem[],
+  restaurantId: string = 'rst_rustic_table'
+): ParsedSalesUploadResult {
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false });
+  const firstSheetName = workbook.SheetNames[0];
+  if (!firstSheetName) {
+    return {
+      validRecords: [],
+      errors: ['Excel workbook does not contain any worksheet.'],
+      detectedDishes: [],
+      minDate: null,
+      maxDate: null
+    };
+  }
+
+  const sheet = workbook.Sheets[firstSheetName];
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: '' });
+  if (matrix.length < 2) {
+    return {
+      validRecords: [],
+      errors: ['Excel sheet must include a header row and at least one sales row.'],
+      detectedDishes: [],
+      minDate: null,
+      maxDate: null
+    };
+  }
+
+  const headerRow = matrix[0].map(cell => String(cell ?? '').trim());
+  const normalizedHeaders = headerRow.map(normalizeHeader);
+  const dateColIdx = normalizedHeaders.findIndex(h =>
+    ['date', 'tanggal', 'tgl', 'saledate', 'businessdate', 'orderdate', 'day'].includes(h)
+  );
+
+  const rawRows = matrix.slice(1).map(row =>
+    row.map((cell, colIdx) => (colIdx === dateColIdx ? formatCellAsDateString(cell) : String(cell ?? '').trim()))
+  );
+
+  return parseTabularMatrix(headerRow, rawRows, existingMenuItems, restaurantId);
 }
 
 function escapeCsvField(val: string | number | boolean): string {
@@ -297,16 +363,29 @@ export function serializeMultiDayForecastCsv(bundle: MultiDayForecastBundle): st
   return [header, ...rows].join('\n');
 }
 
-export function generateSampleMultiYearCsv(endDate: string = '2026-11-12'): string {
-  const sampleDishes = [
-    { name: 'Grilled Chicken Bowl', station: 'Grill', weekday: 34, weekend: 48, price: 14.5 },
-    { name: 'Wood-Fired Salmon', station: 'Grill', weekday: 18, weekend: 29, price: 24.0 },
-    { name: 'Tuscan Cream Pasta', station: 'Saute', weekday: 24, weekend: 38, price: 17.5 },
-    { name: 'Artisan Caesar Salad', station: 'Garde Manger', weekday: 26, weekend: 32, price: 13.0 },
-    { name: 'Country Sourdough Loaf', station: 'Bakery', weekday: 22, weekend: 39, price: 8.5 }
+export function buildSampleSalesRows(endDate: string = '2026-11-12'): {
+  date: string;
+  dish_name: string;
+  station: Station;
+  quantity_sold: number;
+  revenue: number;
+}[] {
+  const sampleDishes: { name: string; station: Station; weekday: number; weekend: number; price: number }[] = [
+    { name: 'Nasi Goreng Kampung', station: 'Saute', weekday: 42, weekend: 62, price: 6.5 },
+    { name: 'Ayam Bakar Madu', station: 'Grill', weekday: 35, weekend: 54, price: 7.5 },
+    { name: 'Salmon Panggang', station: 'Grill', weekday: 18, weekend: 29, price: 14.0 },
+    { name: 'Caesar Salad', station: 'Garde Manger', weekday: 24, weekend: 31, price: 5.5 },
+    { name: 'Roti Sourdough', station: 'Bakery', weekday: 22, weekend: 38, price: 4.5 }
   ];
 
-  const lines: string[] = ['date,dish_name,station,quantity_sold,revenue'];
+  const rows: {
+    date: string;
+    dish_name: string;
+    station: Station;
+    quantity_sold: number;
+    revenue: number;
+  }[] = [];
+
   const end = new Date(`${endDate}T00:00:00Z`);
   const totalDays = 730;
 
@@ -324,10 +403,58 @@ export function generateSampleMultiYearCsv(endDate: string = '2026-11-12'): stri
       const base = isWeekend ? dish.weekend : dish.weekday;
       const noise = (((offset * 13 + j * 7) % 7) - 3) * 0.03;
       const qty = Math.max(3, Math.round(base * seasonalBump * (1 + noise)));
-      const rev = (qty * dish.price).toFixed(2);
-      lines.push(`${iso},${escapeCsvField(dish.name)},${dish.station},${qty},${rev}`);
+      const rev = Math.round(qty * dish.price * 100) / 100;
+      rows.push({
+        date: iso,
+        dish_name: dish.name,
+        station: dish.station,
+        quantity_sold: qty,
+        revenue: rev
+      });
     }
   }
 
+  return rows;
+}
+
+export function generateSampleMultiYearCsv(endDate: string = '2026-11-12'): string {
+  const rows = buildSampleSalesRows(endDate);
+  const lines = ['date,dish_name,station,quantity_sold,revenue'];
+  for (const r of rows) {
+    lines.push(`${r.date},${escapeCsvField(r.dish_name)},${r.station},${r.quantity_sold},${r.revenue.toFixed(2)}`);
+  }
   return lines.join('\n');
+}
+
+export function buildSampleMultiYearWorkbook(endDate: string = '2026-11-12'): XLSX.WorkBook {
+  const rows = buildSampleSalesRows(endDate);
+  const wb = XLSX.utils.book_new();
+
+  const dataSheet = XLSX.utils.json_to_sheet(rows);
+  dataSheet['!cols'] = [
+    { wch: 14 },
+    { wch: 24 },
+    { wch: 16 },
+    { wch: 15 },
+    { wch: 12 }
+  ];
+  XLSX.utils.book_append_sheet(wb, dataSheet, 'Data Penjualan');
+
+  const guideRows = [
+    { Kolom: 'date', Wajib: 'Ya', Keterangan: 'Tanggal penjualan (YYYY-MM-DD atau DD/MM/YYYY)' },
+    { Kolom: 'dish_name', Wajib: 'Opsional', Keterangan: 'Nama menu/hidangan (bisa juga pakai kolom menu/item)' },
+    { Kolom: 'quantity_sold', Wajib: 'Ya', Keterangan: 'Jumlah porsi terjual pada tanggal tersebut' },
+    { Kolom: 'station', Wajib: 'Opsional', Keterangan: 'Grill, Saute, Garde Manger, atau Bakery' },
+    { Kolom: 'revenue', Wajib: 'Opsional', Keterangan: 'Total omzet penjualan menu pada tanggal tersebut' }
+  ];
+  const guideSheet = XLSX.utils.json_to_sheet(guideRows);
+  guideSheet['!cols'] = [{ wch: 16 }, { wch: 12 }, { wch: 52 }];
+  XLSX.utils.book_append_sheet(wb, guideSheet, 'Panduan Format');
+
+  return wb;
+}
+
+export function downloadSampleExcelWorkbook(filename: string = 'contoh_data_penjualan_restoran.xlsx'): void {
+  const wb = buildSampleMultiYearWorkbook('2026-11-12');
+  XLSX.writeFile(wb, filename);
 }

@@ -36,7 +36,7 @@ import {
   addDaysIso
 } from './engine/forecastingEngine';
 import { generatePreparationRecommendations } from './engine/recommendationEngine';
-import { parseUploadedSalesCsv } from './utils/salesCsv';
+import { parseUploadedSalesCsv, parseUploadedExcelWorkbook } from './utils/salesCsv';
 import { requestContextualForecast } from './services/contextualForecastService';
 import { testFirestoreConnection } from './firebase';
 import { AppLayout } from './components/layout/AppLayout';
@@ -205,7 +205,83 @@ export default function App() {
     });
   }, [prepSheetId, startDate, selectedShift, firstDayForecasts, activeDishes, ingredients, prepOverrides]);
 
+  const commitParsedSalesUpload = (
+    fileName: string,
+    parsed: ReturnType<typeof parseUploadedSalesCsv>
+  ) => {
+    if (parsed.validRecords.length === 0) {
+      setUploadFeedback({
+        ok: false,
+        title: `Could not import ${fileName}`,
+        details: parsed.errors[0] || 'No valid rows found in uploaded file.',
+        warnings: parsed.errors.slice(1, 5)
+      });
+      return;
+    }
+
+    const mergedMap = new Map<string, SaleRecord>();
+    if (uploadMode === 'append') {
+      for (const rec of salesRecords) {
+        mergedMap.set(`${rec.date}__${rec.menuItemId}__${rec.mealPeriod}`, rec);
+      }
+    }
+    for (const rec of parsed.validRecords) {
+      mergedMap.set(`${rec.date}__${rec.menuItemId}__${rec.mealPeriod}`, rec);
+    }
+    const nextSales = Array.from(mergedMap.values()).sort((a, b) => b.date.localeCompare(a.date));
+
+    const referenceMenus = uploadMode === 'replace' ? BENCHMARK_MENU_ITEMS : menuItems;
+    const nextDishes = extractDishesFromSales(nextSales, referenceMenus);
+    const nextStart = suggestForecastStartDate(nextSales);
+
+    setSalesRecords(nextSales);
+    setMenuItems(nextDishes);
+    setStartDate(nextStart);
+    setContextualAnalysis(null);
+    setCurrentRoute('forecast');
+
+    SalesRepository.replaceAll(nextSales).catch(err => setDbError(String(err)));
+    MenuRepository.replaceAll(nextDishes).catch(err => setDbError(String(err)));
+
+    setUploadFeedback({
+      ok: true,
+      title: `Uploaded ${fileName} — Next ${horizonDays} Days Predicted Automatically`,
+      details: `Loaded ${parsed.validRecords.length} rows (${parsed.minDate} to ${parsed.maxDate}) across ${parsed.detectedDishes.length} dish(es). Forecast starts ${nextStart}.`,
+      warnings: parsed.errors
+    });
+  };
+
   const handleUploadFile = (file: File) => {
+    const lowerName = file.name.toLowerCase();
+    const baselineMenus = uploadMode === 'replace' ? [] : menuItems;
+
+    if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const buffer = ev.target?.result;
+        if (!(buffer instanceof ArrayBuffer)) {
+          setUploadFeedback({
+            ok: false,
+            title: `Could not read ${file.name}`,
+            details: 'Failed to read binary Excel file.'
+          });
+          return;
+        }
+        try {
+          const parsed = parseUploadedExcelWorkbook(buffer, baselineMenus, settings.restaurantId);
+          commitParsedSalesUpload(file.name, parsed);
+        } catch (err) {
+          setUploadFeedback({
+            ok: false,
+            title: `Invalid Excel file ${file.name}`,
+            details: err instanceof Error ? err.message : 'Unable to parse Excel workbook.'
+          });
+        }
+      };
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = ev => {
       const content = typeof ev.target?.result === 'string' ? ev.target.result : '';
@@ -218,7 +294,7 @@ export default function App() {
         return;
       }
 
-      if (file.name.toLowerCase().endsWith('.json')) {
+      if (lowerName.endsWith('.json')) {
         try {
           const parsed = JSON.parse(content);
           const importedSales: SaleRecord[] = Array.isArray(parsed?.salesRecords)
@@ -264,48 +340,8 @@ export default function App() {
         return;
       }
 
-      const baselineMenus = uploadMode === 'replace' ? [] : menuItems;
       const parsed = parseUploadedSalesCsv(content, baselineMenus, settings.restaurantId);
-      if (parsed.validRecords.length === 0) {
-        setUploadFeedback({
-          ok: false,
-          title: `Could not import ${file.name}`,
-          details: parsed.errors[0] || 'No valid rows found in CSV file.',
-          warnings: parsed.errors.slice(1, 5)
-        });
-        return;
-      }
-
-      const mergedMap = new Map<string, SaleRecord>();
-      if (uploadMode === 'append') {
-        for (const rec of salesRecords) {
-          mergedMap.set(`${rec.date}__${rec.menuItemId}__${rec.mealPeriod}`, rec);
-        }
-      }
-      for (const rec of parsed.validRecords) {
-        mergedMap.set(`${rec.date}__${rec.menuItemId}__${rec.mealPeriod}`, rec);
-      }
-      const nextSales = Array.from(mergedMap.values()).sort((a, b) => b.date.localeCompare(a.date));
-
-      const referenceMenus = uploadMode === 'replace' ? BENCHMARK_MENU_ITEMS : menuItems;
-      const nextDishes = extractDishesFromSales(nextSales, referenceMenus);
-      const nextStart = suggestForecastStartDate(nextSales);
-
-      setSalesRecords(nextSales);
-      setMenuItems(nextDishes);
-      setStartDate(nextStart);
-      setContextualAnalysis(null);
-      setCurrentRoute('forecast');
-
-      SalesRepository.replaceAll(nextSales).catch(err => setDbError(String(err)));
-      MenuRepository.replaceAll(nextDishes).catch(err => setDbError(String(err)));
-
-      setUploadFeedback({
-        ok: true,
-        title: `Uploaded ${file.name} — Next ${horizonDays} Days Predicted Automatically`,
-        details: `Loaded ${parsed.validRecords.length} rows (${parsed.minDate} to ${parsed.maxDate}) across ${parsed.detectedDishes.length} dish(es). Forecast starts ${nextStart}.`,
-        warnings: parsed.errors
-      });
+      commitParsedSalesUpload(file.name, parsed);
     };
     reader.readAsText(file);
   };

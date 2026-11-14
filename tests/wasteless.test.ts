@@ -8,7 +8,13 @@ import {
   generateMultiDayForecast,
   suggestForecastStartDate
 } from '../src/engine/forecastingEngine';
-import { parseUploadedSalesCsv, generateSampleMultiYearCsv } from '../src/utils/salesCsv';
+import * as XLSX from 'xlsx';
+import {
+  parseUploadedSalesCsv,
+  parseUploadedExcelWorkbook,
+  generateSampleMultiYearCsv,
+  buildSampleMultiYearWorkbook
+} from '../src/utils/salesCsv';
 import { generatePreparationRecommendations } from '../src/engine/recommendationEngine';
 import {
   initializeDatabaseIfEmpty,
@@ -221,6 +227,17 @@ describe('Upload-to-Forecast Multi-Year & Multi-Day Pipeline', () => {
     expect(bundle.days.length).toBe(7);
     expect(bundle.dishMatrices[0].yearsCovered).toBeGreaterThanOrEqual(2);
     expect(bundle.dishMatrices[0].dailyResults[0].seasonalModifierPct).not.toBeUndefined();
+  });
+
+  it('builds and parses multi-year Excel (.xlsx) workbook accurately', () => {
+    const wb = buildSampleMultiYearWorkbook('2026-11-12');
+    const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    const parsed = parseUploadedExcelWorkbook(out, []);
+    expect(parsed.errors.length).toBe(0);
+    expect(parsed.validRecords.length).toBe(730 * 5);
+    expect(parsed.minDate).toBe('2024-11-13');
+    expect(parsed.maxDate).toBe('2026-11-12');
+    expect(parsed.detectedDishes).toContain('Nasi Goreng Kampung');
   });
 });
 
