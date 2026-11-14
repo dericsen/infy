@@ -3,8 +3,12 @@ import { areUnitsCompatible, convertQuantity } from '../src/engine/unitConversio
 import {
   evaluateDataSufficiency,
   generateComprehensiveForecast,
-  evaluateBacktestMetrics
+  evaluateBacktestMetrics,
+  extractDishesFromSales,
+  generateMultiDayForecast,
+  suggestForecastStartDate
 } from '../src/engine/forecastingEngine';
+import { parseUploadedSalesCsv, generateSampleMultiYearCsv } from '../src/utils/salesCsv';
 import { generatePreparationRecommendations } from '../src/engine/recommendationEngine';
 import {
   initializeDatabaseIfEmpty,
@@ -153,6 +157,70 @@ describe('Forecasting Engine', () => {
     expect(metrics.evaluatedDaysCount).toBe(14);
     expect(metrics.wmaMae).toBeGreaterThanOrEqual(0);
     expect(metrics.wmaMape).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('Upload-to-Forecast Multi-Year & Multi-Day Pipeline', () => {
+  it('parses semicolon Indonesian/European CSVs with DD/MM/YYYY dates and auto-discovers custom dishes', () => {
+    const customCsv = [
+      'tanggal;menu;terjual;omzet',
+      '10/11/2026;Nasi Goreng Kampung;42;1260',
+      '11/11/2026;Nasi Goreng Kampung;38;1140',
+      '12/11/2026;Nasi Goreng Kampung;45;1350',
+      '12/11/2026;Es Teh Manis;60;300'
+    ].join('\n');
+
+    const parsed = parseUploadedSalesCsv(customCsv, []);
+    expect(parsed.errors.length).toBe(0);
+    expect(parsed.validRecords.length).toBe(4);
+    expect(parsed.minDate).toBe('2026-11-10');
+    expect(parsed.maxDate).toBe('2026-11-12');
+    expect(parsed.detectedDishes).toContain('Nasi Goreng Kampung');
+
+    const startDate = suggestForecastStartDate(parsed.validRecords);
+    expect(startDate).toBe('2026-11-13');
+
+    const dishes = extractDishesFromSales(parsed.validRecords, []);
+    expect(dishes.length).toBe(2);
+
+    const bundle = generateMultiDayForecast({
+      dishes,
+      salesRecords: parsed.validRecords,
+      startDate,
+      horizonDays: 7,
+      weather: { condition: 'Clear', temperatureC: 24, precipChance: 10 },
+      eventContext: 'Regular Service',
+      closedDays: [],
+      settings: DEFAULT_APP_SETTINGS
+    });
+
+    expect(bundle.days.length).toBe(7);
+    expect(bundle.days[0].date).toBe('2026-11-13');
+    expect(bundle.dishMatrices.length).toBe(2);
+    expect(bundle.totalExpectedPortions).toBeGreaterThan(0);
+  });
+
+  it('parses 2-year sample CSV and applies multi-year seasonal forecasting across upcoming 7 days', () => {
+    const sampleCsv = generateSampleMultiYearCsv('2026-11-12');
+    const parsed = parseUploadedSalesCsv(sampleCsv, []);
+    expect(parsed.validRecords.length).toBe(730 * 5);
+    expect(parsed.maxDate).toBe('2026-11-12');
+
+    const dishes = extractDishesFromSales(parsed.validRecords, []);
+    const bundle = generateMultiDayForecast({
+      dishes,
+      salesRecords: parsed.validRecords,
+      startDate: suggestForecastStartDate(parsed.validRecords),
+      horizonDays: 7,
+      weather: { condition: 'Clear', temperatureC: 20, precipChance: 10 },
+      eventContext: 'Regular Service',
+      closedDays: [],
+      settings: DEFAULT_APP_SETTINGS
+    });
+
+    expect(bundle.days.length).toBe(7);
+    expect(bundle.dishMatrices[0].yearsCovered).toBeGreaterThanOrEqual(2);
+    expect(bundle.dishMatrices[0].dailyResults[0].seasonalModifierPct).not.toBeUndefined();
   });
 });
 

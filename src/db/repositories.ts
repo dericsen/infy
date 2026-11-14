@@ -48,6 +48,10 @@ export const MenuRepository = {
   async saveMany(items: MenuItem[]): Promise<void> {
     return idbPutMany(STORES.MENU_ITEMS, items);
   },
+  async replaceAll(items: MenuItem[]): Promise<void> {
+    await idbClearStore(STORES.MENU_ITEMS);
+    return idbPutMany(STORES.MENU_ITEMS, items);
+  },
   async remove(id: string): Promise<void> {
     return idbDelete(STORES.MENU_ITEMS, id);
   }
@@ -76,6 +80,10 @@ export const SalesRepository = {
     return idbPut(STORES.SALES_RECORDS, record);
   },
   async saveMany(records: SaleRecord[]): Promise<void> {
+    return idbPutMany(STORES.SALES_RECORDS, records);
+  },
+  async replaceAll(records: SaleRecord[]): Promise<void> {
+    await idbClearStore(STORES.SALES_RECORDS);
     return idbPutMany(STORES.SALES_RECORDS, records);
   },
   async remove(id: string): Promise<void> {

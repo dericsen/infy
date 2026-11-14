@@ -5,10 +5,7 @@ import {
   MenuItem,
   Ingredient,
   SaleRecord,
-  WasteRecord,
   WasteReason,
-  StockMovementRecord,
-  StockMovementType,
   ClosedDayRecord,
   PrepChecklistItem,
   AppSettings,
@@ -18,7 +15,6 @@ import {
   BENCHMARK_MENU_ITEMS,
   BENCHMARK_INGREDIENTS,
   INITIAL_BENCHMARK_SALES,
-  INITIAL_WASTE_RECORDS,
   DEFAULT_APP_SETTINGS
 } from './data/benchmarkData';
 import {
@@ -26,7 +22,6 @@ import {
   IngredientRepository,
   SalesRepository,
   WasteRepository,
-  StockMovementRepository,
   ClosedDayRepository,
   PrepChecklistRepository,
   PrepOverrideRepository,
@@ -34,52 +29,39 @@ import {
   initializeDatabaseIfEmpty,
   resetDatabaseToBenchmark
 } from './db/repositories';
-import { generateComprehensiveForecast } from './engine/forecastingEngine';
+import {
+  extractDishesFromSales,
+  generateMultiDayForecast,
+  suggestForecastStartDate,
+  addDaysIso
+} from './engine/forecastingEngine';
 import { generatePreparationRecommendations } from './engine/recommendationEngine';
-import { convertQuantity } from './engine/unitConversion';
+import { parseUploadedSalesCsv } from './utils/salesCsv';
 import { requestContextualForecast } from './services/contextualForecastService';
 import { testFirestoreConnection } from './firebase';
-import {
-  UserSession,
-  subscribeToAuthChanges,
-  loginWithGoogle,
-  loginAsDemoUser,
-  logoutUser
-} from './services/authService';
 import { AppLayout } from './components/layout/AppLayout';
-import { TodayView } from './components/views/TodayView';
-import { ForecastView } from './components/views/ForecastView';
-import { KitchenView } from './components/views/KitchenView';
-import { RecordsView } from './components/views/RecordsView';
+import { UploadForecastView, UploadStatusFeedback } from './components/views/UploadForecastView';
+import { PrepWorkspaceView } from './components/views/PrepWorkspaceView';
 import { Modal } from './components/common/Modal';
 import { Button } from './components/common/Button';
-import { ShieldCheck, LogIn, ChefHat, AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 
 export default function App() {
-  const [currentRoute, setCurrentRoute] = useState<AppRoute>('today');
+  const [currentRoute, setCurrentRoute] = useState<AppRoute>('forecast');
   const [selectedStationFilter, setSelectedStationFilter] = useState<Station | 'All'>('All');
-  const [businessDate, setBusinessDate] = useState<string>('2026-11-13');
+  const [startDate, setStartDate] = useState<string>('2026-11-13');
+  const [horizonDays, setHorizonDays] = useState<3 | 7 | 14>(7);
   const [selectedShift, setSelectedShift] = useState<'All Day' | 'Lunch' | 'Dinner'>('All Day');
+  const [uploadMode, setUploadMode] = useState<'replace' | 'append'>('replace');
+  const [uploadFeedback, setUploadFeedback] = useState<UploadStatusFeedback | null>(null);
+
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
-  const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authLoading, setAuthLoading] = useState(false);
-
-  const [isQuickWasteModalOpen, setIsQuickWasteModalOpen] = useState(false);
-  const [wasteDishId, setWasteDishId] = useState('');
-  const [wasteQty, setWasteQty] = useState('3');
-  const [wasteReason, setWasteReason] = useState<WasteReason>('Overproduction');
-  const [wasteLoggedBy, setWasteLoggedBy] = useState('Chef Marco');
-  const [wasteError, setWasteError] = useState<string | null>(null);
-
   const [isDbLoading, setIsDbLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
 
   const [menuItems, setMenuItems] = useState<MenuItem[]>(BENCHMARK_MENU_ITEMS);
   const [ingredients, setIngredients] = useState<Ingredient[]>(BENCHMARK_INGREDIENTS);
   const [salesRecords, setSalesRecords] = useState<SaleRecord[]>(INITIAL_BENCHMARK_SALES);
-  const [wasteRecords, setWasteRecords] = useState<WasteRecord[]>(INITIAL_WASTE_RECORDS);
-  const [stockMovements, setStockMovements] = useState<StockMovementRecord[]>([]);
   const [closedDays, setClosedDays] = useState<ClosedDayRecord[]>([]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
 
@@ -94,15 +76,21 @@ export default function App() {
   const [checklistItems, setChecklistItems] = useState<PrepChecklistItem[]>([]);
   const [prepOverrides, setPrepOverrides] = useState<Record<string, number>>({});
 
-  const [weatherCondition, setWeatherCondition] = useState<'Clear' | 'Rain' | 'Cloudy' | 'Storm'>('Rain');
-  const [temperatureC, setTemperatureC] = useState<number>(13);
-  const [rainChance, setRainChance] = useState<number>(65);
-  const [eventTag, setEventTag] = useState<string>('Payday Friday + Theater Event');
-  const [simulateGeminiOffline, setSimulateGeminiOffline] = useState<boolean>(false);
+  const [weatherCondition, setWeatherCondition] = useState<'Clear' | 'Rain' | 'Cloudy' | 'Storm'>('Clear');
+  const [temperatureC, setTemperatureC] = useState<number>(20);
+  const [rainChance, setRainChance] = useState<number>(15);
+  const [eventTag, setEventTag] = useState<string>('Regular Service');
   const [contextualAnalysis, setContextualAnalysis] = useState<ContextualAnalysisResult | null>(null);
   const [isAnalyzingContext, setIsAnalyzingContext] = useState<boolean>(false);
 
-  const sheetBaseKey = `${businessDate}_${selectedShift.replace(/\s+/g, '')}`;
+  const [isQuickWasteModalOpen, setIsQuickWasteModalOpen] = useState(false);
+  const [wasteDishId, setWasteDishId] = useState('');
+  const [wasteQty, setWasteQty] = useState('3');
+  const [wasteReason, setWasteReason] = useState<WasteReason>('Overproduction');
+  const [wasteLoggedBy, setWasteLoggedBy] = useState('Chef Marco');
+  const [wasteError, setWasteError] = useState<string | null>(null);
+
+  const sheetBaseKey = `${startDate}_${selectedShift.replace(/\s+/g, '')}`;
   const currentRevision = prepRevisionByKey[sheetBaseKey] || 1;
   const prepSheetId = `prep_${sheetBaseKey}_r${currentRevision}`;
 
@@ -115,10 +103,11 @@ export default function App() {
         setMenuItems(data.menuItems);
         setIngredients(data.ingredients);
         setSalesRecords(data.salesRecords);
-        setWasteRecords(data.wasteRecords);
-        setStockMovements(data.stockMovements);
         setClosedDays(data.closedDays);
         setSettings(data.settings);
+        if (data.salesRecords.length > 0) {
+          setStartDate(suggestForecastStartDate(data.salesRecords));
+        }
       } catch (err) {
         if (!active) return;
         setDbError(err instanceof Error ? err.message : 'Failed to initialize IndexedDB persistence.');
@@ -128,7 +117,6 @@ export default function App() {
     })();
 
     testFirestoreConnection();
-    const unsubscribe = subscribeToAuthChanges(user => setCurrentUser(user));
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
@@ -136,7 +124,6 @@ export default function App() {
 
     return () => {
       active = false;
-      unsubscribe();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
@@ -171,31 +158,28 @@ export default function App() {
     }
   }, [prepRevisionByKey]);
 
-  const activeMenuItems = useMemo(() => menuItems.filter(m => m.isActive), [menuItems]);
+  const activeDishes = useMemo(() => {
+    return extractDishesFromSales(salesRecords, menuItems);
+  }, [salesRecords, menuItems]);
 
-  const forecasts = useMemo(() => {
-    return activeMenuItems.map(dish => {
-      const geminiAdjustment = contextualAnalysis && !contextualAnalysis.isFallback
-        ? contextualAnalysis.adjustments.find(a => a.dishId === dish.id)
-        : undefined;
-
-      return generateComprehensiveForecast(
-        dish,
-        salesRecords,
-        businessDate,
-        { condition: weatherCondition, temperatureC, precipChance: rainChance },
-        eventTag,
-        {
-          closedDays,
-          settings,
-          geminiAdjustment
-        }
-      );
+  const forecastBundle = useMemo(() => {
+    return generateMultiDayForecast({
+      dishes: activeDishes,
+      salesRecords,
+      startDate,
+      horizonDays,
+      weather: { condition: weatherCondition, temperatureC, precipChance: rainChance },
+      eventContext: eventTag,
+      closedDays,
+      settings,
+      geminiTargetDate: contextualAnalysis && !contextualAnalysis.isFallback ? contextualAnalysis.targetDate : undefined,
+      geminiAdjustments: contextualAnalysis && !contextualAnalysis.isFallback ? contextualAnalysis.adjustments : undefined
     });
   }, [
-    activeMenuItems,
+    activeDishes,
     salesRecords,
-    businessDate,
+    startDate,
+    horizonDays,
     weatherCondition,
     temperatureC,
     rainChance,
@@ -205,23 +189,162 @@ export default function App() {
     contextualAnalysis
   ]);
 
+  const firstDayForecasts = useMemo(() => {
+    return forecastBundle.days[0]?.dishForecasts || [];
+  }, [forecastBundle]);
+
   const recommendationBundle = useMemo(() => {
     return generatePreparationRecommendations({
       prepSheetId,
-      businessDate,
+      businessDate: startDate,
       shift: selectedShift,
-      forecasts,
-      menuItems,
+      forecasts: firstDayForecasts,
+      menuItems: activeDishes,
       ingredients,
       overrides: prepOverrides
     });
-  }, [prepSheetId, businessDate, selectedShift, forecasts, menuItems, ingredients, prepOverrides]);
+  }, [prepSheetId, startDate, selectedShift, firstDayForecasts, activeDishes, ingredients, prepOverrides]);
+
+  const handleUploadFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const content = typeof ev.target?.result === 'string' ? ev.target.result : '';
+      if (!content.trim()) {
+        setUploadFeedback({
+          ok: false,
+          title: `Could not read ${file.name}`,
+          details: 'Selected file appears empty.'
+        });
+        return;
+      }
+
+      if (file.name.toLowerCase().endsWith('.json')) {
+        try {
+          const parsed = JSON.parse(content);
+          const importedSales: SaleRecord[] = Array.isArray(parsed?.salesRecords)
+            ? parsed.salesRecords
+            : Array.isArray(parsed)
+            ? parsed
+            : [];
+          if (importedSales.length === 0) {
+            setUploadFeedback({
+              ok: false,
+              title: 'Invalid JSON sales file',
+              details: 'Expected a backup object with salesRecords or an array of sale records.'
+            });
+            return;
+          }
+          const nextSales = uploadMode === 'replace' ? importedSales : [...importedSales, ...salesRecords];
+          const nextMenu = Array.isArray(parsed?.menuItems)
+            ? parsed.menuItems
+            : extractDishesFromSales(nextSales, menuItems);
+          const nextStart = suggestForecastStartDate(nextSales);
+
+          setSalesRecords(nextSales);
+          setMenuItems(nextMenu);
+          setStartDate(nextStart);
+          setContextualAnalysis(null);
+          setCurrentRoute('forecast');
+
+          SalesRepository.replaceAll(nextSales).catch(err => setDbError(String(err)));
+          MenuRepository.replaceAll(nextMenu).catch(err => setDbError(String(err)));
+
+          setUploadFeedback({
+            ok: true,
+            title: `Uploaded ${file.name} — Next ${horizonDays} Days Predicted Automatically`,
+            details: `Loaded ${importedSales.length} sales rows. Forecasting ${nextStart} through ${addDaysIso(nextStart, horizonDays - 1)}.`
+          });
+        } catch {
+          setUploadFeedback({
+            ok: false,
+            title: `Invalid JSON in ${file.name}`,
+            details: 'File does not contain valid JSON syntax.'
+          });
+        }
+        return;
+      }
+
+      const baselineMenus = uploadMode === 'replace' ? [] : menuItems;
+      const parsed = parseUploadedSalesCsv(content, baselineMenus, settings.restaurantId);
+      if (parsed.validRecords.length === 0) {
+        setUploadFeedback({
+          ok: false,
+          title: `Could not import ${file.name}`,
+          details: parsed.errors[0] || 'No valid rows found in CSV file.',
+          warnings: parsed.errors.slice(1, 5)
+        });
+        return;
+      }
+
+      const mergedMap = new Map<string, SaleRecord>();
+      if (uploadMode === 'append') {
+        for (const rec of salesRecords) {
+          mergedMap.set(`${rec.date}__${rec.menuItemId}__${rec.mealPeriod}`, rec);
+        }
+      }
+      for (const rec of parsed.validRecords) {
+        mergedMap.set(`${rec.date}__${rec.menuItemId}__${rec.mealPeriod}`, rec);
+      }
+      const nextSales = Array.from(mergedMap.values()).sort((a, b) => b.date.localeCompare(a.date));
+
+      const referenceMenus = uploadMode === 'replace' ? BENCHMARK_MENU_ITEMS : menuItems;
+      const nextDishes = extractDishesFromSales(nextSales, referenceMenus);
+      const nextStart = suggestForecastStartDate(nextSales);
+
+      setSalesRecords(nextSales);
+      setMenuItems(nextDishes);
+      setStartDate(nextStart);
+      setContextualAnalysis(null);
+      setCurrentRoute('forecast');
+
+      SalesRepository.replaceAll(nextSales).catch(err => setDbError(String(err)));
+      MenuRepository.replaceAll(nextDishes).catch(err => setDbError(String(err)));
+
+      setUploadFeedback({
+        ok: true,
+        title: `Uploaded ${file.name} — Next ${horizonDays} Days Predicted Automatically`,
+        details: `Loaded ${parsed.validRecords.length} rows (${parsed.minDate} to ${parsed.maxDate}) across ${parsed.detectedDishes.length} dish(es). Forecast starts ${nextStart}.`,
+        warnings: parsed.errors
+      });
+    };
+    reader.readAsText(file);
+  };
+
+  const handleAddManualSale = (params: { date: string; dishName: string; quantity: number; price: number }) => {
+    const existingDish = menuItems.find(m => m.name.toLowerCase() === params.dishName.toLowerCase());
+    const menuItemId = existingDish?.id || `dish_${params.dishName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+    const newSale: SaleRecord = {
+      id: `manual_${Date.now()}`,
+      restaurantId: settings.restaurantId,
+      date: params.date,
+      dayOfWeek: new Date(params.date).getUTCDay(),
+      menuItemId,
+      dishName: existingDish?.name || params.dishName,
+      station: existingDish?.station || 'Grill',
+      quantitySold: params.quantity,
+      revenue: Math.round(params.quantity * (existingDish?.sellingPrice || params.price) * 100) / 100,
+      mealPeriod: 'All Day',
+      weatherCondition: 'Clear',
+      temperatureC: 20,
+      eventTag: 'Manual Entry',
+      isDemonstrationData: false
+    };
+
+    const nextSales = [newSale, ...salesRecords];
+    const nextMenu = extractDishesFromSales(nextSales, menuItems);
+    setSalesRecords(nextSales);
+    setMenuItems(nextMenu);
+    setStartDate(suggestForecastStartDate(nextSales));
+
+    SalesRepository.save(newSale).catch(err => setDbError(String(err)));
+    MenuRepository.saveMany(nextMenu).catch(err => setDbError(String(err)));
+  };
 
   const handleRequestContextualAnalysis = async () => {
     setIsAnalyzingContext(true);
     try {
       const result = await requestContextualForecast({
-        targetDate: businessDate,
+        targetDate: startDate,
         weatherForecast: {
           condition: weatherCondition,
           temperatureC,
@@ -229,9 +352,9 @@ export default function App() {
         },
         eventContext: eventTag,
         adjustmentLimitPct: settings.aiAdjustmentLimitPct,
-        menuItems,
-        statisticalForecasts: forecasts,
-        simulateOffline: simulateGeminiOffline || !isOnline
+        menuItems: activeDishes,
+        statisticalForecasts: firstDayForecasts,
+        simulateOffline: !isOnline
       });
       setContextualAnalysis(result);
     } finally {
@@ -245,12 +368,12 @@ export default function App() {
     const updatedItem: PrepChecklistItem = {
       id: existing?.id || `${prepSheetId}_${taskId}`,
       prepSheetId,
-      businessDate,
+      businessDate: startDate,
       station,
       taskId,
       isCompleted: nextCompleted,
       completedAt: nextCompleted ? new Date().toISOString() : undefined,
-      completedBy: nextCompleted ? currentUser?.displayName || 'Chef Marco' : undefined,
+      completedBy: nextCompleted ? 'Kitchen Staff' : undefined,
       isDemonstrationData: false
     };
 
@@ -280,210 +403,11 @@ export default function App() {
     PrepOverrideRepository.saveForPrepSheet(prepSheetId, nextOverrides).catch(err => setDbError(String(err)));
   };
 
-  const handleApplyForecastToPrep = (adjustments: Record<string, number>) => {
-    const nextOverrides = { ...prepOverrides, ...adjustments };
-    setPrepOverrides(nextOverrides);
-    PrepOverrideRepository.saveForPrepSheet(prepSheetId, nextOverrides).catch(err => setDbError(String(err)));
-    setCurrentRoute('today');
-  };
-
-  const handleSaveMenuItem = (item: MenuItem) => {
-    setMenuItems(prev => {
-      const idx = prev.findIndex(m => m.id === item.id);
-      if (idx >= 0) {
-        const updated = [...prev];
-        updated[idx] = item;
-        return updated;
-      }
-      return [item, ...prev];
-    });
-    MenuRepository.save(item).catch(err => setDbError(String(err)));
-  };
-
-  const handleDeleteMenuItem = (itemId: string) => {
-    setMenuItems(prev => prev.filter(m => m.id !== itemId));
-    MenuRepository.remove(itemId).catch(err => setDbError(String(err)));
-  };
-
-  const handleSaveIngredient = (ing: Ingredient) => {
-    setIngredients(prev => {
-      const idx = prev.findIndex(i => i.id === ing.id);
-      if (idx >= 0) {
-        const updated = [...prev];
-        updated[idx] = ing;
-        return updated;
-      }
-      return [...prev, ing];
-    });
-    IngredientRepository.save(ing).catch(err => setDbError(String(err)));
-  };
-
-  const handleDeleteIngredient = (ingredientId: string) => {
-    setIngredients(prev => prev.filter(i => i.id !== ingredientId));
-    IngredientRepository.remove(ingredientId).catch(err => setDbError(String(err)));
-  };
-
-  const handleAdjustInventory = (params: {
-    ingredientId: string;
-    type: StockMovementType;
-    quantity: number;
-    reason: string;
-  }): { success: boolean; error?: string } => {
-    const target = ingredients.find(i => i.id === params.ingredientId);
-    if (!target) return { success: false, error: 'Selected ingredient not found.' };
-
-    const previousStock = target.currentStock;
-    let newStock = previousStock;
-    let delta = 0;
-
-    if (params.type === 'addition') {
-      newStock = Math.round((previousStock + params.quantity) * 100) / 100;
-      delta = Math.round(params.quantity * 100) / 100;
-    } else if (params.type === 'reduction') {
-      if (previousStock - params.quantity < 0) {
-        return {
-          success: false,
-          error: `Cannot reduce ${params.quantity} ${target.unit}: only ${previousStock} ${target.unit} on hand.`
-        };
-      }
-      newStock = Math.round((previousStock - params.quantity) * 100) / 100;
-      delta = -Math.round(params.quantity * 100) / 100;
-    } else {
-      if (params.quantity < 0) return { success: false, error: 'Stock count cannot be negative.' };
-      newStock = Math.round(params.quantity * 100) / 100;
-      delta = Math.round((newStock - previousStock) * 100) / 100;
-    }
-
-    const updatedIng: Ingredient = { ...target, currentStock: newStock };
-    const movement: StockMovementRecord = {
-      id: `mv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      restaurantId: target.restaurantId,
-      ingredientId: target.id,
-      ingredientName: target.name,
-      type: params.type,
-      delta,
-      previousStock,
-      newStock,
-      unit: target.unit,
-      reason: params.reason,
-      date: businessDate,
-      timestamp: new Date().toISOString()
-    };
-
-    setIngredients(prev => prev.map(i => (i.id === updatedIng.id ? updatedIng : i)));
-    setStockMovements(prev => [movement, ...prev]);
-
-    IngredientRepository.save(updatedIng).catch(err => setDbError(String(err)));
-    StockMovementRepository.save(movement).catch(err => setDbError(String(err)));
-    return { success: true };
-  };
-
-  const handleBatchCommitStockCounts = (counts: Record<string, number>): { success: boolean; error?: string; changedCount: number } => {
-    for (const [id, val] of Object.entries(counts)) {
-      if (!Number.isFinite(val) || val < 0) {
-        return { success: false, error: `Invalid negative count for ${id}.`, changedCount: 0 };
-      }
-    }
-
-    const updatedList: Ingredient[] = [];
-    const newMovements: StockMovementRecord[] = [];
-    let changedCount = 0;
-
-    for (const ing of ingredients) {
-      const nextCount = counts[ing.id];
-      if (nextCount === undefined) continue;
-      const rounded = Math.round(nextCount * 100) / 100;
-      if (rounded !== ing.currentStock) {
-        changedCount += 1;
-        const delta = Math.round((rounded - ing.currentStock) * 100) / 100;
-        newMovements.push({
-          id: `mv_${Date.now()}_${ing.id}`,
-          restaurantId: ing.restaurantId,
-          ingredientId: ing.id,
-          ingredientName: ing.name,
-          type: 'adjustment',
-          delta,
-          previousStock: ing.currentStock,
-          newStock: rounded,
-          unit: ing.unit,
-          reason: 'Physical count commit',
-          date: businessDate,
-          timestamp: new Date().toISOString()
-        });
-        updatedList.push({ ...ing, currentStock: rounded });
-      } else {
-        updatedList.push(ing);
-      }
-    }
-
-    if (changedCount > 0) {
-      setIngredients(updatedList);
-      setStockMovements(prev => [...newMovements, ...prev]);
-      IngredientRepository.saveMany(updatedList).catch(err => setDbError(String(err)));
-      newMovements.forEach(m => StockMovementRepository.save(m).catch(err => setDbError(String(err))));
-    }
-
-    return { success: true, changedCount };
-  };
-
-  const handleRecordSaleTransaction = (sale: SaleRecord): { success: boolean; error?: string; deductedDetails: string[] } => {
-    const matchedDish = menuItems.find(m => m.id === sale.menuItemId);
-    if (!matchedDish) return { success: false, error: 'Menu dish not found.', deductedDetails: [] };
-
-    const deductedDetails: string[] = [];
-    const newMovements: StockMovementRecord[] = [];
-    const updatedIngredients = ingredients.map(ing => {
-      const bomItem = matchedDish.ingredients.find(b => b.ingredientId === ing.id);
-      if (!bomItem) return ing;
-
-      const conv = convertQuantity(bomItem.quantity * sale.quantitySold, bomItem.unit, ing.unit);
-      if (!conv.compatible) {
-        deductedDetails.push(`${ing.name}: skipped (unit mismatch)`);
-        return ing;
-      }
-
-      const totalConsumed = Math.round(conv.value * 100) / 100;
-      const newStock = Math.max(0, Math.round((ing.currentStock - totalConsumed) * 100) / 100);
-      const actualDelta = Math.round((newStock - ing.currentStock) * 100) / 100;
-
-      deductedDetails.push(`${ing.name}: ${actualDelta} ${ing.unit}`);
-      newMovements.push({
-        id: `mv_${Date.now()}_${ing.id}_${Math.random().toString(36).slice(2, 5)}`,
-        restaurantId: ing.restaurantId,
-        ingredientId: ing.id,
-        ingredientName: ing.name,
-        type: 'sale_deduction',
-        delta: actualDelta,
-        previousStock: ing.currentStock,
-        newStock,
-        unit: ing.unit,
-        reason: `POS sale: ${sale.quantitySold}x ${matchedDish.name}`,
-        date: sale.date,
-        timestamp: new Date().toISOString()
-      });
-
-      return { ...ing, currentStock: newStock };
-    });
-
-    setSalesRecords(prev => [sale, ...prev]);
-    setIngredients(updatedIngredients);
-    if (newMovements.length > 0) setStockMovements(prev => [...newMovements, ...prev]);
-
-    SalesRepository.save(sale).catch(err => setDbError(String(err)));
-    IngredientRepository.saveMany(updatedIngredients).catch(err => setDbError(String(err)));
-    newMovements.forEach(m => StockMovementRepository.save(m).catch(err => setDbError(String(err))));
-
-    return { success: true, deductedDetails };
-  };
-
-  const handleUpdateSaleRecord = (updatedSale: SaleRecord) => {
-    setSalesRecords(prev => prev.map(r => (r.id === updatedSale.id ? updatedSale : r)));
-    SalesRepository.save(updatedSale).catch(err => setDbError(String(err)));
-  };
-
-  const handleUploadCsvSales = (records: SaleRecord[]) => {
-    setSalesRecords(prev => [...records, ...prev]);
-    SalesRepository.saveMany(records).catch(err => setDbError(String(err)));
+  const handleSaveStockCount = (ingredientId: string, nextStock: number) => {
+    const updatedList = ingredients.map(i => (i.id === ingredientId ? { ...i, currentStock: nextStock } : i));
+    setIngredients(updatedList);
+    const target = updatedList.find(i => i.id === ingredientId);
+    if (target) IngredientRepository.save(target).catch(err => setDbError(String(err)));
   };
 
   const handleAddClosedDay = (date: string, reason: string) => {
@@ -503,32 +427,46 @@ export default function App() {
     ClosedDayRepository.remove(id).catch(err => setDbError(String(err)));
   };
 
-  const handleAddWasteRecord = (rec: WasteRecord) => {
-    setWasteRecords(prev => [rec, ...prev]);
-    WasteRepository.save(rec).catch(err => setDbError(String(err)));
+  const handleResetBenchmark = async () => {
+    try {
+      const data = await resetDatabaseToBenchmark();
+      setMenuItems(data.menuItems);
+      setIngredients(data.ingredients);
+      setSalesRecords(data.salesRecords);
+      setClosedDays(data.closedDays);
+      setSettings(data.settings);
+      setChecklistItems([]);
+      setPrepOverrides({});
+      setContextualAnalysis(null);
+      setUploadFeedback(null);
+      setStartDate(suggestForecastStartDate(data.salesRecords));
+      setPrepRevisionByKey({});
+      localStorage.removeItem('wl_prep_revisions');
+    } catch (err) {
+      setDbError(err instanceof Error ? err.message : 'Failed to reset database.');
+    }
   };
 
   const handleSaveQuickWaste = () => {
     setWasteError(null);
-    const dish = menuItems.find(m => m.id === (wasteDishId || menuItems[0]?.id));
+    const dish = activeDishes.find(m => m.id === (wasteDishId || activeDishes[0]?.id));
     if (!dish) {
       setWasteError('No menu items available.');
       return;
     }
     const qty = parseInt(wasteQty, 10);
     if (!Number.isFinite(qty) || qty <= 0) {
-      setWasteError('Discarded portions must be at least 1.');
+      setWasteError('Portions must be at least 1.');
       return;
     }
     if (!wasteLoggedBy.trim()) {
       setWasteError('Enter staff name.');
       return;
     }
-
-    handleAddWasteRecord({
+    WasteRepository.save({
       id: `wst_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
       restaurantId: dish.restaurantId || 'rst_rustic_table',
-      date: businessDate,
+      date: startDate,
       itemId: dish.id,
       itemType: 'menu_item',
       name: dish.name,
@@ -539,167 +477,62 @@ export default function App() {
       reason: wasteReason,
       loggedBy: wasteLoggedBy.trim(),
       station: dish.station
-    });
+    }).catch(err => setDbError(String(err)));
     setIsQuickWasteModalOpen(false);
   };
 
-  const handleSaveSettings = (updated: AppSettings) => {
-    setSettings(updated);
-    setContextualAnalysis(null);
-    SettingsRepository.save(updated).catch(err => setDbError(String(err)));
-  };
+  return (
+    <>
+      <AppLayout
+        currentRoute={currentRoute}
+        onRouteChange={setCurrentRoute}
+        onUploadFileSelected={handleUploadFile}
+      >
+        {dbError && (
+          <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{dbError}</span>
+            </div>
+            <button onClick={() => setDbError(null)} className="font-semibold underline">
+              Dismiss
+            </button>
+          </div>
+        )}
 
-  const handleResetBenchmark = async () => {
-    try {
-      const data = await resetDatabaseToBenchmark();
-      setMenuItems(data.menuItems);
-      setIngredients(data.ingredients);
-      setSalesRecords(data.salesRecords);
-      setWasteRecords(data.wasteRecords);
-      setStockMovements(data.stockMovements);
-      setClosedDays(data.closedDays);
-      setSettings(data.settings);
-      setChecklistItems([]);
-      setPrepOverrides({});
-      setContextualAnalysis(null);
-      setPrepRevisionByKey({});
-      localStorage.removeItem('wl_prep_revisions');
-    } catch (err) {
-      setDbError(err instanceof Error ? err.message : 'Failed to reset database.');
-    }
-  };
-
-  const handleExportJson = () => {
-    const data = {
-      restaurant: settings.restaurantName,
-      version: '2.0.0',
-      exportedAt: new Date().toISOString(),
-      settings,
-      menuItems,
-      ingredients,
-      salesRecords,
-      wasteRecords,
-      closedDays,
-      stockMovements
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `wasteless_backup_${businessDate}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImportJson = (jsonString: string): { success: boolean; error?: string } => {
-    try {
-      const data = JSON.parse(jsonString);
-      if (!data || typeof data !== 'object') {
-        return { success: false, error: 'Backup file does not contain a valid JSON object.' };
-      }
-      if (Array.isArray(data.menuItems)) {
-        setMenuItems(data.menuItems);
-        MenuRepository.saveMany(data.menuItems).catch(err => setDbError(String(err)));
-      }
-      if (Array.isArray(data.ingredients)) {
-        setIngredients(data.ingredients);
-        IngredientRepository.saveMany(data.ingredients).catch(err => setDbError(String(err)));
-      }
-      if (Array.isArray(data.salesRecords)) {
-        setSalesRecords(data.salesRecords);
-        SalesRepository.saveMany(data.salesRecords).catch(err => setDbError(String(err)));
-      }
-      if (Array.isArray(data.wasteRecords)) {
-        setWasteRecords(data.wasteRecords);
-        WasteRepository.saveMany(data.wasteRecords).catch(err => setDbError(String(err)));
-      }
-      if (data.settings && typeof data.settings === 'object') {
-        setSettings(data.settings);
-        SettingsRepository.save(data.settings).catch(err => setDbError(String(err)));
-      }
-      return { success: true };
-    } catch {
-      return { success: false, error: 'Invalid JSON syntax in selected backup file.' };
-    }
-  };
-
-  const handleGoogleSignIn = async () => {
-    setAuthLoading(true);
-    try {
-      await loginWithGoogle();
-      setIsAuthModalOpen(false);
-    } catch {
-      return;
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const handleDemoSignIn = async () => {
-    setAuthLoading(true);
-    try {
-      await loginAsDemoUser();
-      setIsAuthModalOpen(false);
-    } catch {
-      return;
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const renderActiveView = () => {
-    if (isDbLoading) {
-      return (
-        <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-xs text-slate-600">
-          Loading kitchen data...
-        </div>
-      );
-    }
-
-    switch (currentRoute) {
-      case 'today':
-        return (
-          <TodayView
-            businessDate={businessDate}
-            selectedShift={selectedShift}
-            selectedStationFilter={selectedStationFilter}
-            recommendationBundle={recommendationBundle}
-            checklistItems={checklistItems}
-            forecasts={forecasts}
-            contextualAnalysis={contextualAnalysis}
-            weatherCondition={weatherCondition}
-            temperatureC={temperatureC}
-            rainChance={rainChance}
-            eventTag={eventTag}
-            settings={settings}
-            onBusinessDateChange={date => {
-              setBusinessDate(date);
-              setContextualAnalysis(null);
-            }}
-            onShiftChange={setSelectedShift}
-            onStationFilterChange={setSelectedStationFilter}
-            onToggleChecklistItem={handleToggleChecklistItem}
-            onResetPrepSheet={handleResetPrepSheet}
-            onOverrideChange={handleOverrideChange}
-            onNavigate={setCurrentRoute}
-          />
-        );
-      case 'forecast':
-        return (
-          <ForecastView
-            businessDate={businessDate}
-            menuItems={menuItems}
+        {isDbLoading ? (
+          <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-xs text-slate-600">
+            Loading saved sales data...
+          </div>
+        ) : currentRoute === 'forecast' ? (
+          <UploadForecastView
             salesRecords={salesRecords}
-            forecasts={forecasts}
+            activeDishes={activeDishes}
             closedDays={closedDays}
             settings={settings}
+            startDate={startDate}
+            horizonDays={horizonDays}
+            uploadMode={uploadMode}
+            uploadFeedback={uploadFeedback}
+            forecastBundle={forecastBundle}
             weatherCondition={weatherCondition}
             temperatureC={temperatureC}
             rainChance={rainChance}
             eventTag={eventTag}
-            simulateGeminiOffline={simulateGeminiOffline}
             contextualAnalysis={contextualAnalysis}
             isAnalyzingContext={isAnalyzingContext}
+            onStartDateChange={date => {
+              setStartDate(date);
+              setContextualAnalysis(null);
+            }}
+            onHorizonDaysChange={setHorizonDays}
+            onUploadModeChange={setUploadMode}
+            onUploadFile={handleUploadFile}
+            onDismissUploadFeedback={() => setUploadFeedback(null)}
+            onAddManualSale={handleAddManualSale}
+            onAddClosedDay={handleAddClosedDay}
+            onRemoveClosedDay={handleRemoveClosedDay}
+            onResetToBenchmark={handleResetBenchmark}
             onWeatherConditionChange={val => {
               setWeatherCondition(val);
               setContextualAnalysis(null);
@@ -716,88 +549,41 @@ export default function App() {
               setEventTag(val);
               setContextualAnalysis(null);
             }}
-            onSimulateGeminiOfflineChange={setSimulateGeminiOffline}
             onRequestContextualAnalysis={handleRequestContextualAnalysis}
-            onApplyForecastToPrep={handleApplyForecastToPrep}
           />
-        );
-      case 'kitchen':
-        return (
-          <KitchenView
-            menuItems={menuItems}
+        ) : (
+          <PrepWorkspaceView
+            businessDate={startDate}
+            selectedShift={selectedShift}
+            selectedStationFilter={selectedStationFilter}
+            recommendationBundle={recommendationBundle}
+            checklistItems={checklistItems}
             ingredients={ingredients}
-            stockMovements={stockMovements}
-            businessDate={businessDate}
-            onSaveMenuItem={handleSaveMenuItem}
-            onDeleteMenuItem={handleDeleteMenuItem}
-            onSaveIngredient={handleSaveIngredient}
-            onDeleteIngredient={handleDeleteIngredient}
-            onAdjustInventory={handleAdjustInventory}
-            onBatchCommitStockCounts={handleBatchCommitStockCounts}
-          />
-        );
-      case 'records':
-        return (
-          <RecordsView
-            salesRecords={salesRecords}
-            wasteRecords={wasteRecords}
-            menuItems={menuItems}
-            ingredients={ingredients}
-            closedDays={closedDays}
             settings={settings}
-            businessDate={businessDate}
-            currentUser={currentUser}
-            onUploadCsv={handleUploadCsvSales}
-            onRecordSaleTransaction={handleRecordSaleTransaction}
-            onUpdateSaleRecord={handleUpdateSaleRecord}
-            onAddClosedDay={handleAddClosedDay}
-            onRemoveClosedDay={handleRemoveClosedDay}
+            onBusinessDateChange={date => {
+              setStartDate(date);
+              setContextualAnalysis(null);
+            }}
+            onShiftChange={setSelectedShift}
+            onStationFilterChange={setSelectedStationFilter}
+            onToggleChecklistItem={handleToggleChecklistItem}
+            onResetPrepSheet={handleResetPrepSheet}
+            onOverrideChange={handleOverrideChange}
+            onSaveStockCount={handleSaveStockCount}
             onOpenWasteModal={() => {
               setWasteError(null);
-              if (!wasteDishId && menuItems[0]) setWasteDishId(menuItems[0].id);
+              if (!wasteDishId && activeDishes[0]) setWasteDishId(activeDishes[0].id);
               setIsQuickWasteModalOpen(true);
             }}
-            onSaveSettings={handleSaveSettings}
-            onResetToBenchmark={handleResetBenchmark}
-            onExportJson={handleExportJson}
-            onImportJson={handleImportJson}
-            onOpenAuthModal={() => setIsAuthModalOpen(true)}
-            onLogout={logoutUser}
           />
-        );
-    }
-  };
-
-  return (
-    <>
-      <AppLayout
-        currentRoute={currentRoute}
-        onRouteChange={setCurrentRoute}
-        onQuickWasteLog={() => {
-          setWasteError(null);
-          if (!wasteDishId && menuItems[0]) setWasteDishId(menuItems[0].id);
-          setIsQuickWasteModalOpen(true);
-        }}
-      >
-        {dbError && (
-          <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-              <span>{dbError}</span>
-            </div>
-            <button onClick={() => setDbError(null)} className="font-semibold underline">
-              Dismiss
-            </button>
-          </div>
         )}
-        {renderActiveView()}
       </AppLayout>
 
       <Modal
         isOpen={isQuickWasteModalOpen}
         onClose={() => setIsQuickWasteModalOpen(false)}
         title="Log Waste Discard"
-        subtitle={`Service date: ${businessDate}`}
+        subtitle={`Service date: ${startDate}`}
         footer={
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => setIsQuickWasteModalOpen(false)}>Cancel</Button>
@@ -812,13 +598,13 @@ export default function App() {
           <div>
             <label className="block font-medium text-slate-700 mb-1">Menu Item</label>
             <select
-              value={wasteDishId || menuItems[0]?.id || ''}
+              value={wasteDishId || activeDishes[0]?.id || ''}
               onChange={e => setWasteDishId(e.target.value)}
               className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg"
             >
-              {menuItems.map(m => (
+              {activeDishes.map(m => (
                 <option key={m.id} value={m.id}>
-                  {m.name} ({m.station}) — {settings.currency}{m.targetCost.toFixed(2)}/portion
+                  {m.name} ({m.station})
                 </option>
               ))}
             </select>
@@ -857,42 +643,6 @@ export default function App() {
               onChange={e => setWasteLoggedBy(e.target.value)}
               className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg"
             />
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
-        title="Staff Sign In"
-        subtitle="Associate prep sign-offs with your staff profile"
-      >
-        <div className="space-y-4 py-2 text-xs">
-          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-900 flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
-            <span>Operational data persists locally in IndexedDB with optional Firebase Authentication.</span>
-          </div>
-
-          <div className="space-y-2.5">
-            <Button
-              variant="primary"
-              className="w-full justify-center py-2.5"
-              onClick={handleGoogleSignIn}
-              isLoading={authLoading}
-              leftIcon={<LogIn className="w-4 h-4" />}
-            >
-              Sign In with Google
-            </Button>
-
-            <Button
-              variant="outline"
-              className="w-full justify-center py-2.5"
-              onClick={handleDemoSignIn}
-              isLoading={authLoading}
-              leftIcon={<ChefHat className="w-4 h-4 text-emerald-600" />}
-            >
-              Quick Sign In as Chef Marco
-            </Button>
           </div>
         </div>
       </Modal>

@@ -40,6 +40,7 @@ export interface DishForecastResult {
   naivePrediction: number;
   baseStatisticalForecast: number;
   trendAdjustmentPct: number;
+  seasonalModifierPct: number;
   contextModifierPct: number;
   clampedModifierPct: number;
   expectedSales: number;
@@ -51,6 +52,60 @@ export interface DishForecastResult {
   rationale: string;
   adjustmentSource: 'gemini' | 'statistical_heuristic' | 'closed';
   riskOfWaste: 'Low' | 'Medium' | 'High';
+}
+
+export interface DailyForecastSummary {
+  date: string;
+  dayLabel: string;
+  shortDateLabel: string;
+  isClosedDay: boolean;
+  totalExpectedSales: number;
+  totalRecommendedPrep: number;
+  dishForecasts: DishForecastResult[];
+}
+
+export interface DishMultiDayRow {
+  dishId: string;
+  dishName: string;
+  station: Station;
+  category: string;
+  historicalAvg: number;
+  dataStatus: DataSufficiencyStatus['status'];
+  totalDaysHistory: number;
+  yearsCovered: number;
+  totalHorizonExpected: number;
+  totalHorizonPrep: number;
+  dailyResults: DishForecastResult[];
+}
+
+export interface MultiDayForecastBundle {
+  startDate: string;
+  horizonDays: number;
+  days: DailyForecastSummary[];
+  dishMatrices: DishMultiDayRow[];
+  totalExpectedPortions: number;
+  totalRecommendedPrep: number;
+}
+
+export function addDaysIso(isoDate: string, days: number): string {
+  const parts = isoDate.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return isoDate;
+  const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+export function suggestForecastStartDate(salesRecords: SaleRecord[]): string {
+  if (salesRecords.length === 0) {
+    return new Date().toISOString().split('T')[0];
+  }
+  let maxDate = salesRecords[0].date;
+  for (let i = 1; i < salesRecords.length; i++) {
+    if (salesRecords[i].date > maxDate) {
+      maxDate = salesRecords[i].date;
+    }
+  }
+  return addDaysIso(maxDate, 1);
 }
 
 function getClosedDateSet(closedDays: ClosedDayRecord[]): Set<string> {
@@ -102,7 +157,7 @@ export function evaluateDataSufficiency(
     totalDays,
     sameWeekdayCount,
     status: 'insufficient',
-    message: `Insufficient history (${sameWeekdayCount} matching weekday records). Using transparent baseline prediction.`
+    message: `Limited history (${sameWeekdayCount} matching weekday records). Using transparent baseline prediction.`
   };
 }
 
@@ -113,10 +168,7 @@ export function calculateNaiveBaseline(
   closedDays: ClosedDayRecord[] = []
 ): number {
   const closedSet = getClosedDateSet(closedDays);
-  const target = new Date(targetDate);
-  const sevenDaysAgo = new Date(target);
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const dateStr = sevenDaysAgo.toISOString().split('T')[0];
+  const dateStr = addDaysIso(targetDate, -7);
 
   const matched = salesHistory.filter(
     r => r.menuItemId === dishId && r.date === dateStr && !closedSet.has(r.date)
@@ -223,6 +275,56 @@ export function calculateRecentTrendModifier(
 
   const trendDelta = (recentAvg - earlierAvg) / earlierAvg;
   return Math.max(-0.08, Math.min(0.08, Math.round(trendDelta * 100) / 100));
+}
+
+export function calculateYearOverYearSeasonalModifier(
+  salesHistory: SaleRecord[],
+  dishId: string,
+  targetDate: string,
+  closedDays: ClosedDayRecord[] = []
+): { modifierPct: number; matchedYears: number } {
+  const closedSet = getClosedDateSet(closedDays);
+  const dishRecords = salesHistory.filter(
+    r => r.menuItemId === dishId && r.date < targetDate && !closedSet.has(r.date)
+  );
+  const dailyAggregates = aggregateByDate(dishRecords);
+  if (dailyAggregates.length < 45) {
+    return { modifierPct: 0, matchedYears: 0 };
+  }
+
+  const targetYear = Number(targetDate.slice(0, 4));
+  const monthDay = targetDate.slice(4);
+  const seasonalSignals: number[] = [];
+
+  for (let yearsBack = 1; yearsBack <= 3; yearsBack++) {
+    const priorYear = targetYear - yearsBack;
+    const priorYearPrefix = `${priorYear}-`;
+    const yearRecords = dailyAggregates.filter(r => r.date.startsWith(priorYearPrefix));
+    if (yearRecords.length < 30) continue;
+
+    const anchorDate = `${priorYear}${monthDay}`;
+    const windowStart = addDaysIso(anchorDate, -7);
+    const windowEnd = addDaysIso(anchorDate, 7);
+    const windowRecords = yearRecords.filter(r => r.date >= windowStart && r.date <= windowEnd);
+    if (windowRecords.length < 3) continue;
+
+    const yearAvg = yearRecords.reduce((sum, r) => sum + r.quantitySold, 0) / yearRecords.length;
+    if (yearAvg <= 0) continue;
+
+    const windowAvg = windowRecords.reduce((sum, r) => sum + r.quantitySold, 0) / windowRecords.length;
+    const ratio = (windowAvg - yearAvg) / yearAvg;
+    seasonalSignals.push(Math.max(-0.15, Math.min(0.15, ratio)));
+  }
+
+  if (seasonalSignals.length === 0) {
+    return { modifierPct: 0, matchedYears: 0 };
+  }
+
+  const avgSignal = seasonalSignals.reduce((s, v) => s + v, 0) / seasonalSignals.length;
+  return {
+    modifierPct: Math.round(avgSignal * 100) / 100,
+    matchedYears: seasonalSignals.length
+  };
 }
 
 export function evaluateBacktestMetrics(
@@ -346,6 +448,7 @@ export function generateComprehensiveForecast(
       naivePrediction,
       baseStatisticalForecast: baseForecast,
       trendAdjustmentPct: 0,
+      seasonalModifierPct: 0,
       contextModifierPct: 0,
       clampedModifierPct: 0,
       expectedSales: 0,
@@ -364,22 +467,33 @@ export function generateComprehensiveForecast(
     ? 0
     : calculateRecentTrendModifier(salesHistory, dish.id, targetDate, closedDays);
 
+  const yoySeasonal = calculateYearOverYearSeasonalModifier(salesHistory, dish.id, targetDate, closedDays);
+
   const minClamp = -1 * (limitPct / 100);
   const maxClamp = limitPct / 100;
 
-  let contextModifierPct = trendAdjustmentPct;
-  let rationaleParts: string[] = [];
+  let contextModifierPct = trendAdjustmentPct + yoySeasonal.modifierPct;
+  const rationaleParts: string[] = [];
   let adjustmentSource: 'gemini' | 'statistical_heuristic' = 'statistical_heuristic';
   let riskOfWaste: 'Low' | 'Medium' | 'High' = 'Low';
 
   if (options?.geminiAdjustment) {
     adjustmentSource = 'gemini';
-    contextModifierPct = options.geminiAdjustment.suggestedMultiplier;
+    contextModifierPct = options.geminiAdjustment.suggestedMultiplier + yoySeasonal.modifierPct;
     rationaleParts.push(options.geminiAdjustment.rationale);
+    if (yoySeasonal.modifierPct !== 0) {
+      rationaleParts.push(`Prior-year seasonal (${yoySeasonal.modifierPct > 0 ? '+' : ''}${Math.round(yoySeasonal.modifierPct * 100)}%)`);
+    }
     riskOfWaste = options.geminiAdjustment.riskOfWaste;
   } else {
     if (trendAdjustmentPct !== 0) {
       rationaleParts.push(`7-day trend (${trendAdjustmentPct > 0 ? '+' : ''}${Math.round(trendAdjustmentPct * 100)}%)`);
+    }
+
+    if (yoySeasonal.modifierPct !== 0) {
+      rationaleParts.push(
+        `${yoySeasonal.matchedYears}y seasonal window (${yoySeasonal.modifierPct > 0 ? '+' : ''}${Math.round(yoySeasonal.modifierPct * 100)}%)`
+      );
     }
 
     if (weather.condition === 'Rain' || weather.condition === 'Storm' || weather.precipChance >= 60) {
@@ -437,7 +551,9 @@ export function generateComprehensiveForecast(
   }
 
   const baseRationale = dataSufficiency.status === 'insufficient'
-    ? 'Limited history: baseline statistical estimate applied without downward reduction.'
+    ? (yoySeasonal.modifierPct !== 0
+      ? `Baseline average with ${yoySeasonal.matchedYears}-year seasonal cue.`
+      : 'Limited history: baseline statistical estimate applied without downward reduction.')
     : rationaleParts.length > 0
     ? rationaleParts.join('; ')
     : 'Steady 4-week day-of-week statistical baseline.';
@@ -454,6 +570,7 @@ export function generateComprehensiveForecast(
     naivePrediction,
     baseStatisticalForecast: baseForecast,
     trendAdjustmentPct,
+    seasonalModifierPct: yoySeasonal.modifierPct,
     contextModifierPct: Math.round(contextModifierPct * 1000) / 1000,
     clampedModifierPct: effectiveModifier,
     expectedSales,
@@ -465,5 +582,199 @@ export function generateComprehensiveForecast(
     rationale: baseRationale,
     adjustmentSource,
     riskOfWaste
+  };
+}
+
+export function extractDishesFromSales(
+  salesHistory: SaleRecord[],
+  existingMenuItems: MenuItem[]
+): MenuItem[] {
+  const activeExisting = existingMenuItems.filter(m => m.isActive);
+  const byId = new Map<string, MenuItem>(activeExisting.map(m => [m.id, m]));
+  const byName = new Map<string, MenuItem>(activeExisting.map(m => [m.name.toLowerCase(), m]));
+
+  const discovered = new Map<string, {
+    id: string;
+    name: string;
+    station: Station;
+    restaurantId: string;
+    totalQty: number;
+    totalRev: number;
+  }>();
+
+  for (const s of salesHistory) {
+    if (byId.has(s.menuItemId) || byName.has(s.dishName.toLowerCase())) {
+      continue;
+    }
+    const key = s.menuItemId;
+    const prev = discovered.get(key);
+    if (prev) {
+      prev.totalQty += s.quantitySold;
+      prev.totalRev += s.revenue;
+    } else {
+      discovered.set(key, {
+        id: s.menuItemId,
+        name: s.dishName,
+        station: s.station || 'Grill',
+        restaurantId: s.restaurantId || 'rst_rustic_table',
+        totalQty: s.quantitySold,
+        totalRev: s.revenue
+      });
+    }
+  }
+
+  const synthesized: MenuItem[] = Array.from(discovered.values()).map(d => {
+    const avgPrice = d.totalQty > 0 && d.totalRev > 0
+      ? Math.round((d.totalRev / d.totalQty) * 100) / 100
+      : 15;
+    return {
+      id: d.id,
+      restaurantId: d.restaurantId,
+      name: d.name,
+      category: 'Uploaded Menu',
+      station: d.station,
+      sellingPrice: avgPrice,
+      targetCost: Math.round(avgPrice * 0.3 * 100) / 100,
+      isActive: true,
+      isDemonstrationData: false,
+      ingredients: []
+    };
+  });
+
+  if (salesHistory.length > 0 && synthesized.length > 0) {
+    const salesDishIds = new Set(salesHistory.map(s => s.menuItemId));
+    const matchedExisting = activeExisting.filter(m => salesDishIds.has(m.id));
+    if (matchedExisting.length === 0) {
+      return synthesized;
+    }
+    return [...matchedExisting, ...synthesized];
+  }
+
+  return activeExisting;
+}
+
+export function generateMultiDayForecast(params: {
+  dishes: MenuItem[];
+  salesRecords: SaleRecord[];
+  startDate: string;
+  horizonDays: number;
+  weather: { condition: string; temperatureC: number; precipChance: number };
+  eventContext: string;
+  closedDays: ClosedDayRecord[];
+  settings: AppSettings;
+  geminiTargetDate?: string;
+  geminiAdjustments?: GeminiDishAdjustment[];
+}): MultiDayForecastBundle {
+  const {
+    dishes,
+    salesRecords,
+    startDate,
+    horizonDays,
+    weather,
+    eventContext,
+    closedDays,
+    settings,
+    geminiTargetDate,
+    geminiAdjustments
+  } = params;
+
+  const weekdayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const days: DailyForecastSummary[] = [];
+  const perDishDaily = new Map<string, DishForecastResult[]>();
+
+  for (const dish of dishes) {
+    perDishDaily.set(dish.id, []);
+  }
+
+  let totalExpectedPortions = 0;
+  let totalRecommendedPrep = 0;
+
+  for (let offset = 0; offset < horizonDays; offset++) {
+    const targetDate = addDaysIso(startDate, offset);
+    const dObj = new Date(targetDate);
+    const dayName = weekdayNames[dObj.getUTCDay()] || '';
+    const shortDateLabel = `${dayName} ${targetDate.slice(5)}`;
+    const dayLabel = dObj.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC'
+    });
+
+    const dishForecasts = dishes.map(dish => {
+      const geminiAdjustment =
+        geminiTargetDate === targetDate && geminiAdjustments
+          ? geminiAdjustments.find(a => a.dishId === dish.id)
+          : undefined;
+
+      const res = generateComprehensiveForecast(
+        dish,
+        salesRecords,
+        targetDate,
+        weather,
+        eventContext,
+        {
+          closedDays,
+          settings,
+          geminiAdjustment
+        }
+      );
+
+      perDishDaily.get(dish.id)?.push(res);
+      return res;
+    });
+
+    const dayExpected = dishForecasts.reduce((s, r) => s + r.expectedSales, 0);
+    const dayPrep = dishForecasts.reduce((s, r) => s + r.recommendedPrep, 0);
+    const isClosedDay = dishForecasts.length > 0 && dishForecasts.every(r => r.isClosedDay);
+
+    totalExpectedPortions += dayExpected;
+    totalRecommendedPrep += dayPrep;
+
+    days.push({
+      date: targetDate,
+      dayLabel,
+      shortDateLabel,
+      isClosedDay,
+      totalExpectedSales: dayExpected,
+      totalRecommendedPrep: dayPrep,
+      dishForecasts
+    });
+  }
+
+  const dishMatrices: DishMultiDayRow[] = dishes.map(dish => {
+    const dailyResults = perDishDaily.get(dish.id) || [];
+    const dishSales = salesRecords.filter(s => s.menuItemId === dish.id);
+    const byDate = aggregateByDate(dishSales);
+    const yearsSet = new Set(byDate.map(r => r.date.slice(0, 4)));
+    const avgHist = byDate.length > 0
+      ? Math.round((byDate.reduce((s, r) => s + r.quantitySold, 0) / byDate.length) * 10) / 10
+      : 0;
+
+    const firstDay = dailyResults[0];
+    return {
+      dishId: dish.id,
+      dishName: dish.name,
+      station: dish.station,
+      category: dish.category,
+      historicalAvg: avgHist,
+      dataStatus: firstDay ? firstDay.dataSufficiency.status : 'insufficient',
+      totalDaysHistory: byDate.length,
+      yearsCovered: yearsSet.size,
+      totalHorizonExpected: dailyResults.reduce((s, r) => s + r.expectedSales, 0),
+      totalHorizonPrep: dailyResults.reduce((s, r) => s + r.recommendedPrep, 0),
+      dailyResults
+    };
+  });
+
+  dishMatrices.sort((a, b) => b.totalHorizonExpected - a.totalHorizonExpected);
+
+  return {
+    startDate,
+    horizonDays,
+    days,
+    dishMatrices,
+    totalExpectedPortions,
+    totalRecommendedPrep
   };
 }

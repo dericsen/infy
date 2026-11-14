@@ -7,10 +7,8 @@ export type WasteReason = 'Overproduction' | 'Expired' | 'Prep Mistake' | 'Quali
 export type StockMovementType = 'addition' | 'reduction' | 'adjustment' | 'sale_deduction';
 
 export type AppRoute =
-  | 'today'
   | 'forecast'
-  | 'kitchen'
-  | 'records';
+  | 'prep';
 
 export interface Restaurant {
   id: string;

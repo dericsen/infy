@@ -1,34 +1,27 @@
-import React, { useState } from 'react';
-import { Trash2, Menu as MenuIcon, X } from 'lucide-react';
+import React, { useRef } from 'react';
+import { Upload } from 'lucide-react';
 import { AppRoute } from '../../types';
 import { Button } from '../common/Button';
 
 interface AppLayoutProps {
   currentRoute: AppRoute;
   onRouteChange: (route: AppRoute) => void;
-  onQuickWasteLog: () => void;
+  onUploadFileSelected: (file: File) => void;
   children: React.ReactNode;
 }
 
 export const AppLayout: React.FC<AppLayoutProps> = ({
   currentRoute,
   onRouteChange,
-  onQuickWasteLog,
+  onUploadFileSelected,
   children
 }) => {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const navLinks: { route: AppRoute; label: string }[] = [
-    { route: 'today', label: 'Today' },
-    { route: 'forecast', label: 'Forecast' },
-    { route: 'kitchen', label: 'Kitchen' },
-    { route: 'records', label: 'Records' }
+    { route: 'forecast', label: 'Upload & Forecast' },
+    { route: 'prep', label: 'Kitchen Prep' }
   ];
-
-  const handleSelectRoute = (route: AppRoute) => {
-    onRouteChange(route);
-    setMobileMenuOpen(false);
-  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans antialiased text-slate-800">
@@ -36,20 +29,20 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-8">
           <button
             type="button"
-            onClick={() => handleSelectRoute('today')}
+            onClick={() => onRouteChange('forecast')}
             className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded"
           >
             Infy
           </button>
 
-          <nav className="hidden md:flex items-center gap-6">
+          <nav className="flex items-center gap-6">
             {navLinks.map(link => {
               const isActive = currentRoute === link.route;
               return (
                 <button
                   key={link.route}
                   type="button"
-                  onClick={() => handleSelectRoute(link.route)}
+                  onClick={() => onRouteChange(link.route)}
                   className={`py-1 text-sm font-medium transition-colors whitespace-nowrap shrink-0 border-b-2 ${
                     isActive
                       ? 'text-emerald-700 border-emerald-600 font-semibold'
@@ -62,48 +55,31 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             })}
           </nav>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center shrink-0">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.txt,.json,text/csv,application/json"
+              className="hidden"
+              onChange={e => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  onUploadFileSelected(file);
+                  e.target.value = '';
+                }
+              }}
+            />
             <Button
               size="sm"
               variant="primary"
-              onClick={onQuickWasteLog}
-              leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+              onClick={() => fileInputRef.current?.click()}
+              leftIcon={<Upload className="w-3.5 h-3.5" />}
               className="whitespace-nowrap shrink-0"
             >
-              Log Waste
+              Upload Sales CSV
             </Button>
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(prev => !prev)}
-              className="md:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100"
-              aria-label="Toggle navigation"
-            >
-              {mobileMenuOpen ? <X className="w-5 h-5" /> : <MenuIcon className="w-5 h-5" />}
-            </button>
           </div>
         </div>
-
-        {mobileMenuOpen && (
-          <div className="md:hidden border-t border-slate-200 bg-white px-4 py-2 flex items-center gap-2 overflow-x-auto">
-            {navLinks.map(link => {
-              const isActive = currentRoute === link.route;
-              return (
-                <button
-                  key={link.route}
-                  type="button"
-                  onClick={() => handleSelectRoute(link.route)}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap shrink-0 ${
-                    isActive
-                      ? 'bg-emerald-50 text-emerald-800 font-semibold'
-                      : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {link.label}
-                </button>
-              );
-            })}
-          </div>
-        )}
       </header>
 
       <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6">
